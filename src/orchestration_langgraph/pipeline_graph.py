@@ -89,3 +89,78 @@ def run_pipeline_via_langgraph(
         initial_state, config={"recursion_limit": recursion_limit}
     )
     return final_state["outcomes"]
+
+
+# ---------------------------------------------------------------------------
+# CLI para uso directo en Colab: `python -m src.orchestration_langgraph.pipeline_graph`
+#
+# Bloque 5 (MAIN 5): mismo contrato exacto que la CLI de
+# `pipeline_orchestrator.py` (mismos flags, misma semántica de exit code)
+# -- para que cualquier invocador externo (scripts/run_pipeline.py,
+# Corrida_03_a_08.ipynb) pueda apuntar aquí sin cambiar nada más que el
+# nombre del módulo.
+# ---------------------------------------------------------------------------
+
+
+def _parse_args(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--project-dir", required=True, help="Ruta a PROJECT_DIR (contiene active_experiment.json)."
+    )
+    parser.add_argument(
+        "--until",
+        default=None,
+        choices=CANONICAL_STAGE_ORDER,
+        help="Detenerse tras completar esta etapa (por defecto corre hasta 08).",
+    )
+    parser.add_argument(
+        "--start-stage",
+        default=None,
+        choices=CANONICAL_STAGE_ORDER,
+        help=(
+            "Empezar el recorrido directamente en esta etapa, en vez de "
+            "CANONICAL_STAGE_ORDER[0] -- ejecuta ÚNICAMENTE esta etapa y las "
+            "que resulten de sus transiciones reales (nunca las anteriores). "
+            "Con start-stage explícito, el chequeo de estado ya-terminal se "
+            "omite deliberadamente (se respeta la petición explícita del "
+            "llamador, igual que --force-rerun) -- si la etapa ya está "
+            "COMPLETED y vigente (fingerprints sin cambios), sigue "
+            "reconociéndose SKIPPED_FRESH con normalidad; si su último "
+            "commit fue FAILED (ej. HALT_STAGE), esto la reintenta con un "
+            "decision_id nuevo, SIN --force-rerun y sin tocar ninguna etapa "
+            "previa."
+        ),
+    )
+    parser.add_argument(
+        "--force-rerun",
+        action="store_true",
+        help="Reejecuta la etapa inicial aunque ya esté COMPLETED y vigente en pipeline_state.json.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = _parse_args(argv)
+    outcomes = run_pipeline_via_langgraph(
+        args.project_dir,
+        start_stage=args.start_stage,
+        until=args.until,
+        force_rerun=args.force_rerun,
+    )
+    for outcome in outcomes:
+        print(
+            f"[{outcome.status:24s}] {outcome.label:45s} "
+            f"execution={outcome.execution_status} quality={outcome.quality_status} "
+            f"next={outcome.next_action}->{outcome.target_stage}"
+        )
+        for warning in outcome.warnings:
+            print(f"    warning: {warning}")
+        if outcome.error:
+            print(f"    error: {outcome.error}")
+    return 0 if all(o.status not in {"FAILED", "REACHED_UNREGISTERED_STAGE"} for o in outcomes) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
