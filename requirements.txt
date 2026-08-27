@@ -2,6 +2,14 @@
 
 langchain-core==0.3.86
 langchain-openai==0.3.35
+# MAIN 5: LangGraph será el ÚNICO orquestador final del sistema.
+# pipeline_orchestrator.py (el motor propio basado en máquina de estados)
+# se conserva SOLO temporalmente, durante la validación/regresión de esta
+# migración -- se retira al cierre del Bloque 6. Compatibilidad verificada
+# explícitamente contra langchain-core==0.3.86 / langchain-openai==0.3.35
+# (pip check limpio, sin relajar ningún pin existente). No subir a
+# langgraph>=1.0: exige langchain-core>=1.0.
+langgraph==0.6.11
 openai==1.109.1
 
 chromadb==1.5.9
