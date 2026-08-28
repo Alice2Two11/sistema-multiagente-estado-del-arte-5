@@ -44,13 +44,23 @@ WRITER_VERIFIER_DEFAULT_MAX_ROUNDS = 3  # mismo valor por defecto que CycleState
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-# resultado de intentar realizar un retorno dentro
+# Resultado de intentar realizar un retorno dentro
 # del ciclo controlado entre el redactor y el verificador.
 @dataclass(frozen=True)
 class CycleReturnOutcome:
-    new_state: PipelineState #nuevo estado del pipeline después de aplicar el retorno
-    invalidated_stages: tuple[str, ...] # qué etapas quedaron invalidadas porque se volvió hacia atrás y sus resultados ya no deben considerarse vigentes.
+    new_state: PipelineState  # nuevo estado del pipeline después de aplicar el retorno
+    invalidated_stages: tuple[str, ...]  # etapas invalidadas por el retorno
     cycle_exhausted: bool
+
+def apply_return_with_cycle(
+    store: StateStore,
+    *,
+    from_stage: str,
+    target_stage: str,
+    reason: str,
+    max_rounds: int = WRITER_VERIFIER_DEFAULT_MAX_ROUNDS,
+    order: tuple[str, ...] = CANONICAL_STAGE_ORDER,
+) -> CycleReturnOutcome:
 
     # Comprueba si la transición solicitada corresponde específicamente
     # al retorno controlado del verificador (07) hacia el redactor (06).
@@ -63,36 +73,64 @@ class CycleReturnOutcome:
     # invalida desde la etapa destino hacia adelante y termina sin agotar ningún ciclo.
     if not is_writer_verifier_cycle:
         new_state, invalidated = invalidate_from(
-            store, from_stage_inclusive=target_stage, reason=reason, order=order
+            store,
+            from_stage_inclusive=target_stage,
+            reason=reason,
+            order=order,
         )
-        return CycleReturnOutcome(new_state, invalidated, False)
+        return CycleReturnOutcome(
+            new_state,
+            invalidated,
+            False,
+        )
 
     # Carga el estado actual del pipeline y recupera la información
     # existente del ciclo 06↔07; si aún no existe, crea un ciclo nuevo.
     state = store.load()
-    cycle = state.cycles.get(WRITER_VERIFIER_CYCLE_NAME) or CycleState(
+
+    cycle = state.cycles.get(
+        WRITER_VERIFIER_CYCLE_NAME
+    ) or CycleState(
         max_rounds=max_rounds
     )
 
     # Comprueba si el ciclo 06↔07 ya alcanzó el máximo de rondas permitidas.
     if cycle.rounds_used >= cycle.max_rounds:
+
         # Marca el ciclo como agotado y registra la causa del último retorno.
         exhausted_cycle = replace(
-            cycle, status="EXHAUSTED", last_return_reason=reason
+            cycle,
+            status="EXHAUSTED",
+            last_return_reason=reason,
         )
 
         # Actualiza la información de ciclos dentro del estado del pipeline.
         updated_cycles = dict(state.cycles)
-        updated_cycles[WRITER_VERIFIER_CYCLE_NAME] = exhausted_cycle
+        updated_cycles[
+            WRITER_VERIFIER_CYCLE_NAME
+        ] = exhausted_cycle
+
         # Actualiza la fecha de modificación del estado.
         now = _now_iso()
+
         new_state = replace(
             state,
             cycles=updated_cycles,
-            identity=replace(state.identity, updated_at=now),
+            identity=replace(
+                state.identity,
+                updated_at=now,
+            ),
         )
-        store.save(new_state)     # Guarda el nuevo estado persistido con el ciclo marcado como agotado.
-        return CycleReturnOutcome(new_state, (), True)     # Devuelve que no se invalidaron nuevas etapas y que el ciclo se agotó.
+
+        # Guarda el nuevo estado persistido con el ciclo marcado como agotado.
+        store.save(new_state)
+
+        # Devuelve que no se invalidaron nuevas etapas y que el ciclo se agotó.
+        return CycleReturnOutcome(
+            new_state,
+            (),
+            True,
+        )
 
     # Si todavía quedan rondas disponibles, incrementa en uno el contador
     # del ciclo 06↔07, lo mantiene activo y registra la causa del retorno.
@@ -102,22 +140,41 @@ class CycleReturnOutcome:
         status="ACTIVE",
         last_return_reason=reason,
     )
+
     # Actualiza el ciclo writer-verifier dentro del estado general del pipeline,
     # registra la nueva fecha de modificación y guarda el estado persistido.
     updated_cycles = dict(state.cycles)
-    updated_cycles[WRITER_VERIFIER_CYCLE_NAME] = updated_cycle
+    updated_cycles[
+        WRITER_VERIFIER_CYCLE_NAME
+    ] = updated_cycle
+
     now = _now_iso()
+
     state = replace(
-        state, cycles=updated_cycles, identity=replace(state.identity, updated_at=now)
+        state,
+        cycles=updated_cycles,
+        identity=replace(
+            state.identity,
+            updated_at=now,
+        ),
     )
+
     store.save(state)
 
     # Invalida la etapa destino y todas las posteriores porque sus resultados
     # pueden haber quedado obsoletos después del retorno.
     new_state, invalidated = invalidate_from(
-        store, from_stage_inclusive=target_stage, reason=reason, order=order
+        store,
+        from_stage_inclusive=target_stage,
+        reason=reason,
+        order=order,
     )
-    return CycleReturnOutcome(new_state, invalidated, False)
+
+    return CycleReturnOutcome(
+        new_state,
+        invalidated,
+        False,
+    )
 
 
 # Marca como resuelto el ciclo 06↔07 cuando estaba activo
