@@ -68,6 +68,8 @@ class QuantitativeExtractionCapability:
     def __init__(self, dependencies: QuantitativeExtractionDependencies):
         self.dependencies = dependencies
 
+    # Inicia la ejecución de 03B y valida que la etapa, el intento, la política y las entradas sean correctos.
+    # (comprueba que 03B se está ejecutando correctamente, que no está usando ground truth y que sus papers/chunks son válidos.)
     def execute(self, agent_input: AgentInput) -> AgentResult:
         started = datetime.now(timezone.utc).isoformat()
         try:
@@ -83,6 +85,8 @@ class QuantitativeExtractionCapability:
                 dependencies=agent_input.dependencies,
                 policy=policy,
             )
+            # Prepara la carpeta de salida, calcula la huella de esta ejecución
+            # y localiza el manifest anterior de 03B.
             output_dir = Path(agent_input.agent_context.output_directory)
             fingerprints = build_quantitative_composite_fingerprint(agent_input, policy)
             manifest_path = output_dir / "quantitative_extraction_manifest.json"
@@ -90,7 +94,11 @@ class QuantitativeExtractionCapability:
             if not policy["force_rebuild"] and not policy["deterministic_flattening_repair"] and manifest_path.is_file():
                 old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 existing = {name: output_dir / name for name in ARTIFACT_FILENAMES}
+                # Prepara la carpeta de salida, calcula la huella de esta ejecución
+                # y localiza el manifest anterior de 03B.
                 if old_manifest.get("fingerprint") == fingerprints.composite and all(path.is_file() for path in existing.values()):
+                    # Devuelve los artefactos existentes porque la ejecución anterior
+                    # sigue siendo válida y reproducible.
                     return AgentResult(
                         execution_status=ExecutionStatus.COMPLETED,
                         quality_status=QualityStatus.APPROVED_WITH_WARNINGS,
@@ -103,8 +111,11 @@ class QuantitativeExtractionCapability:
                         tool_usage=ToolUsage(), attempt_number=1, started_at=started,
                         completed_at=datetime.now(timezone.utc).isoformat(), error=None,
                     )
-
+            # Decide si se repararán únicamente las tablas 
+            # o si debe ejecutarse nuevamente la extracción con el LLM.
             preserve_sources = bool(policy["deterministic_flattening_repair"])
+            # Si la extracción original del LLM ya es válida pero las tablas derivadas
+            # necesitan corregirse, reutiliza los JSON existentes sin volver a llamar al LLM.
             if preserve_sources:
                 structured_path = output_dir / ARTIFACT_FILENAMES[0]
                 raw_path = output_dir / ARTIFACT_FILENAMES[1]
@@ -114,7 +125,9 @@ class QuantitativeExtractionCapability:
                 results = json.loads(structured_path.read_text(encoding="utf-8"))
                 raw = _read_jsonl(raw_path)
                 errors = []
-                calls = 0
+                calls = 0 #O sea: mantiene intacta la extracción original y vuelve a generar únicamente las representaciones derivadas.
+            # Si no es una reparación determinista, solicita al LLM
+            # la extracción de información cuantitativa de los papers.
             else:
                 before_hashes = {}
                 results, raw, errors, calls = extract_quantitative_records(
@@ -123,24 +136,33 @@ class QuantitativeExtractionCapability:
                     human_message_factory=self.dependencies.human_message_factory,
                     json_parser=self.dependencies.json_parser,
                 )
-
+            # Convierte la salida estructurada del LLM en tablas
+            # de resultados cuantitativos, datasets y técnicas.
             flattened = flatten_results(results)
             errors = list(errors) + list(flattened.issues)
             kb_rows = {str(row["source_filename"]): row for _, row in df.iterrows()}
+            # Verifica que los resultados cuantitativos realmente puedan
+            # respaldarse con los papers y chunks disponibles.
             quantitative = verify_quantitative_rows(
                 flattened.quantitative,
                 kb_rows_by_source=kb_rows,
                 chunks=chunks,
                 allow_all_clean_chunks_fallback=policy["allow_all_clean_chunks_fallback"],
             )
+            # Calcula métricas diagnósticas sobre la calidad
+            # y cobertura de la extracción cuantitativa.
             metrics = calculate_diagnostic_metrics(
                 papers_processed=len(df), quantitative_rows=quantitative,
                 dataset_rows=flattened.datasets, technique_rows=flattened.techniques,
                 error_rows=errors, raw_summary=flattened.raw_summary,
                 flattened_summary=flattened.flattened_summary,
             )
+            # Detecta si fue necesario ampliar la búsqueda a todos los chunks
+            # limpios porque no se encontró evidencia en el alcance inicial.
             fallback_used = any(r.get("source_chunk_scope") == "all_clean_chunks_fallback" for r in quantitative)
+            # Determina la calidad diagnóstica de la extracción según las métricas, errores y uso de fallback.
             status_text, reasons = diagnostic_quality_status(metrics, fallback_used=fallback_used, error_count=0 if preserve_sources else len([e for e in errors if e.get("error_type") == "LLM_EXTRACTION_ERROR"]))
+            # Guarda los nueve artefactos producidos por 03B, junto con métricas, manifest y trazabilidad de entradas.
             written, manifest = write_quantitative_artifacts(
                 output_dir=output_dir, results=results, raw_records=raw, errors=errors,
                 quantitative_rows=quantitative, dataset_rows=flattened.datasets,
@@ -154,14 +176,18 @@ class QuantitativeExtractionCapability:
                 },
                 preserve_structured_sources=preserve_sources,
             )
+            # Comprueba que la reparación no haya modificado los JSON originales de extracción.
             if preserve_sources:
                 after_hashes = {name: sha256_file(output_dir / name) for name in ARTIFACT_FILENAMES[:2]}
                 if before_hashes != after_hashes:
                     raise RuntimeError("ATOMIC_WRITE_FAILED: los JSON originales fueron modificados")
 
+            # Convierte el diagnóstico en el estado de calidad y prepara las advertencias detectadas.
             quality = QualityStatus(status_text)
             warnings = tuple(AgentWarning(code=r, severity=WarningSeverity.WARNING, blocking=False, message=r) for r in reasons)
+            # Identifica si se realizó una extracción completa o únicamente una reparación determinista del aplanamiento.
             decision_code = "QUANTITATIVE_FLATTENING_REPAIRED" if preserve_sources else "QUANTITATIVE_EXTRACTION_COMPLETED"
+            # Devuelve el resultado final de 03B con métricas, artefactos, advertencias y número de llamadas al LLM.
             return AgentResult(
                 execution_status=ExecutionStatus.COMPLETED, quality_status=quality,
                 decision=DecisionInfo(code=decision_code, rationale="La capacidad 03B produjo sus nueve artefactos con validación JSON↔tablas."),
@@ -172,6 +198,7 @@ class QuantitativeExtractionCapability:
                 tool_usage=ToolUsage(llm_calls=calls), attempt_number=1, started_at=started,
                 completed_at=datetime.now(timezone.utc).isoformat(), error=None,
             )
+        # Si ocurre un error, identifica su causa conocida, sanitiza información sensible y detiene 03B de forma segura.
         except Exception as exc:
             text = str(exc)
             known = (
