@@ -1,12 +1,8 @@
-"""Ensamblado y compilación del ``StateGraph`` de MAIN 5 -- único motor de
-orquestación del sistema desde el Bloque 6.
-
-Construye la topología del grafo a partir de
-``decision_engine.CANONICAL_STAGE_ORDER`` -- la MISMA fuente única de
-verdad del orden de etapas que usaba la máquina de estados propia antes de
-retirarse (``pipeline_orchestrator.py``, eliminado en el Bloque 6). Este
-módulo nunca importó ni importa ese archivo.
-"""
+# ============================================================
+# ENSAMBLADO Y COMPILACIÓN DEL STATEGRAPH DEL PIPELINE
+# Define la topología, nodos y transiciones del flujo principal
+# usando LangGraph como único motor de orquestación.
+# ============================================================
 
 from __future__ import annotations
 
@@ -18,62 +14,66 @@ from src.orchestration_langgraph.graph_state import GraphState
 from src.orchestration_langgraph.nodes import make_stage_node, reconcile_pending_node
 from src.orchestration_langgraph.routing import route_after_stage
 
-
+# Construye el grafo principal de LangGraph, registra cada etapa como nodo
+# y define las rutas condicionales que determinan cómo avanza el pipeline.
 def build_pipeline_graph():
-    """Construye (sin compilar) el ``StateGraph`` completo: nodo de
-    reconciliación de arranque + un nodo por cada etapa de
-    ``CANONICAL_STAGE_ORDER``, con edges condicionales que replican
-    ADVANCE/RETRY/RETURN/HALT_STAGE/STOP_PIPELINE vía
-    ``routing.route_after_stage``."""
-
-    registry = {spec.key: spec for spec in _stage_registry()}
-
-    graph = StateGraph(GraphState)
-    graph.add_node("reconcile_pending", reconcile_pending_node)
-    for stage_key in CANONICAL_STAGE_ORDER:
-        graph.add_node(stage_key, make_stage_node(registry[stage_key]))
-
-    graph.set_entry_point("reconcile_pending")
-
-    # Cualquier nodo (incluido reconcile_pending) puede rutear a
-    # cualquier etapa del orden canónico (ADVANCE normal, RETRY como
-    # self-loop, o RETURN hacia una etapa anterior -- hoy solo 07->06) o
-    # a END (HALT_STAGE/STOP_PIPELINE/pipeline completo/`until`
-    # alcanzado). El path_map es el mismo para todos los nodos: no hay
-    # restricción de aristas más allá de la que ya impone
-    # decision_engine.validate_transition dentro de cada StageOutcome.
-    path_map = {stage_key: stage_key for stage_key in CANONICAL_STAGE_ORDER}
+    registry = {
+        spec.key: spec
+        for spec in _stage_registry()
+    }
+    graph = StateGraph(GraphState) # Crea el StateGraph usando el estado compartido del pipeline.
+    graph.add_node( # Añade primero el nodo encargado de ejecutar fases pendientes.
+        "reconcile_pending",
+        reconcile_pending_node,
+    ) 
+    for stage_key in CANONICAL_STAGE_ORDER:     # Registra cada etapa canónica del sistema como un nodo de LangGraph.
+        graph.add_node(stage_key, 
+                       make_stage_node(registry[stage_key]))
+    graph.set_entry_point("reconcile_pending") # Define reconcile_pending como punto inicial del grafo.
+    # Construye el mapa de destinos válidos: cualquier etapa canónica o el final del grafo.
+    path_map = {
+        stage_key: stage_key
+        for stage_key in CANONICAL_STAGE_ORDER
+    }
     path_map[END] = END
-
-    graph.add_conditional_edges("reconcile_pending", route_after_stage, path_map)
+    # Después de reconciliar pendientes, decide dinámicamente cuál será el siguiente nodo.
+    graph.add_conditional_edges(
+        "reconcile_pending",
+        route_after_stage,
+        path_map,
+    )
+    # Después de cada etapa, vuelve a usar la misma función de routing
+    # para decidir si avanza, retorna, reintenta o termina.    
     for stage_key in CANONICAL_STAGE_ORDER:
-        graph.add_conditional_edges(stage_key, route_after_stage, path_map)
+        graph.add_conditional_edges(
+            stage_key,
+            route_after_stage,
+            path_map,
+        )
+    return graph # Devuelve el grafo completamente ensamblado.
 
-    return graph
-
-
+# Construye el grafo y lo compila para dejarlo listo
+# para ejecutar el pipeline mediante LangGraph.
 def compile_pipeline_graph():
     """Grafo compilado, listo para ``.invoke(...)``."""
-
     return build_pipeline_graph().compile()
 
-
+# Ejecuta el pipeline completo usando el grafo compilado de LangGraph,
+# construye el estado inicial y devuelve los resultados de todas las etapas.
 def run_pipeline_via_langgraph(
     project_dir: str,
     *,
-    start_stage: str | None = None,
-    until: str | None = None,
-    attempt_numbers: dict[str, int] | None = None,
-    force_rerun: bool = False,
-    observations: dict | None = None,
+    start_stage: str | None = None, #permite comenzar desde una etapa concreta
+    until: str | None = None, #permite detener la ejecución en una etapa determinada
+    attempt_numbers: dict[str, int] | None = None, #conserva cuántos intentos lleva cada etapa
+    force_rerun: bool = False, #obliga a volver a ejecutar aunque existan resultados previos
+    observations: dict | None = None, #permite pasar información adicional al estado del grafo
     recursion_limit: int = 50,
 ):
-    """Punto de entrada de orquestación global del sistema, corriendo
-    sobre el grafo compilado. ``start_stage`` tiene aquí el nombre
-    ``entry_stage`` dentro del estado, por consistencia con el resto de
-    ``GraphState``."""
 
-    app = compile_pipeline_graph()
+    app = compile_pipeline_graph()  # Compila el StateGraph para dejarlo listo para ejecutar.
+
+    # Construye el estado inicial compartido por todos los nodos del grafo.
     initial_state: GraphState = {
         "project_dir": str(project_dir),
         "entry_stage": start_stage,
@@ -84,24 +84,44 @@ def run_pipeline_via_langgraph(
         "outcomes": [],
         "observations": observations,
     }
+
+    # Ejecuta el grafo completo desde el estado inicial.
     final_state = app.invoke(
         initial_state, config={"recursion_limit": recursion_limit}
     )
-    return final_state["outcomes"]
+    return final_state["outcomes"] # Devuelve los resultados acumulados durante la ejecución del pipeline.
 
 
-# ---------------------------------------------------------------------------
-# CLI para uso directo en Colab: `python -m src.orchestration_langgraph.pipeline_graph`
-#
-# Bloque 5 (MAIN 5): mismo contrato exacto que tenía la CLI de la máquina
-# de estados propia antes de retirarse (``pipeline_orchestrator.py``,
-# eliminado en el Bloque 6) -- mismos flags, misma semántica de exit code
-# -- para que cualquier invocador externo (scripts/run_pipeline.py,
-# Corrida_03_a_08.ipynb) pueda apuntar aquí sin cambiar nada más que el
-# nombre del módulo.
-# ---------------------------------------------------------------------------
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Define los argumentos disponibles para ejecutar el pipeline desde la terminal,
+# permitiendo elegir el proyecto, la etapa inicial, la etapa final y si se fuerza una reejecución.
 def _parse_args(argv=None):
     import argparse
 
@@ -140,15 +160,20 @@ def _parse_args(argv=None):
     )
     return parser.parse_args(argv)
 
-
+# Ejecuta el pipeline desde la terminal, muestra el resultado de cada etapa
+# y devuelve un código de salida según si la ejecución terminó correctamente.
 def main(argv=None) -> int:
+    # Lee los argumentos enviados desde la línea de comandos.
     args = _parse_args(argv)
+    # Ejecuta el pipeline mediante LangGraph con la configuración indicada.
     outcomes = run_pipeline_via_langgraph(
         args.project_dir,
         start_stage=args.start_stage,
         until=args.until,
         force_rerun=args.force_rerun,
     )
+    
+    # Recorre los resultados de cada etapa ejecutada.
     for outcome in outcomes:
         print(
             f"[{outcome.status:24s}] {outcome.label:45s} "
@@ -159,6 +184,7 @@ def main(argv=None) -> int:
             print(f"    warning: {warning}")
         if outcome.error:
             print(f"    error: {outcome.error}")
+    # Devuelve 0 si ninguna etapa falló y 1 si ocurrió un fallo o se alcanzó una etapa no registrada.
     return 0 if all(o.status not in {"FAILED", "REACHED_UNREGISTERED_STAGE"} for o in outcomes) else 1
 
 
