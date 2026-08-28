@@ -37,7 +37,7 @@ from src.utils.json_parsing import parse_json_safely
 # 3 únicos consumidores vivían en el subgrafo PREPARE/COMMIT/RESUME
 # (prepare_draft_execution/execute_prepared_draft/commit_executed_draft/
 # resume_draft_execution), también eliminado por completo: el flujo real
-# de Stage06 usa exclusivamente pipeline_orchestrator.py::
+# de Stage06 usa exclusivamente stage_constructors.py::
 # _draft_runtime_transaction -> src/runtime/draft_writing_protocol.py
 # (execute_draft_transaction/resolve_draft_resume), confirmado sin
 # ningún consumidor de este archivo para esa transacción.

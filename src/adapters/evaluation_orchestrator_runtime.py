@@ -1,8 +1,31 @@
-# ============================================================
-# 08 - ORQUESTADOR DE EVALUACIÓN DEL ESTADO DEL ARTE
-# Coordina las métricas y evaluaciones del resultado final,
-# consolida los resultados y genera los reportes de calidad.
-# ============================================================
+"""Contrato transaccional de la etapa 08: PREPARE/EXECUTE/COMMIT/RESUME
+sobre ``StateStore``, produciendo un ``AgentResult`` — 08 no es un agente
+conceptual, pero debe devolver un resultado compatible con el orquestador.
+
+Mapeo de resultado (5 categorías, sin convertir una excepción real en un
+commit exitoso):
+
+1. **Excepción técnica** (GT ausente, chunks ausentes, etc.) →
+   ``execution_status=FAILED``.
+2. **Inconsistencia factual bloqueante** (``resolve_factual_gate`` real
+   lanza ``ValueError``) → ``execution_status=FAILED`` — la excepción real
+   del notebook se propaga hasta aquí sin capturarse antes; solo en ESTE
+   punto se envuelve en un ``AgentResult`` para poder comprometerlo al
+   ``StateStore`` (igual que hacen 02-06 con sus fallos de preparación).
+3. **``evaluation_validation_ok=False`` con
+   ``fail_on_invalid_evaluation=True``** (``resolve_final_validation_gate``
+   real lanza) → ``execution_status=FAILED``, mismo tratamiento que 2.
+4. **Evaluación inválida PERMITIDA** (``evaluation_validation_ok=False`` con
+   ``fail_on_invalid_evaluation=False``, o pendiente factual no bloqueante
+   sin otros errores) → ``execution_status=COMPLETED``,
+   ``quality_status=REJECTED`` si hay ``validation_errors``, o
+   ``APPROVED_WITH_WARNINGS`` si solo hay ``validation_warnings``.
+5. **Evaluación válida sin advertencias** →
+   ``execution_status=COMPLETED``, ``quality_status=APPROVED``.
+
+Los casos 1-3 nunca llegan a escribir los 15 outputs (el notebook real
+tampoco lo hace: la excepción interrumpe antes). Los casos 4-5 sí.
+"""
 
 from __future__ import annotations
 
@@ -31,9 +54,7 @@ EVALUATION_STAGE_NAME = "08_evaluacion_experimental"
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-# Define la función principal que prepara y coordina toda la evaluación
-# experimental del estado del arte generado.
-#reúne las entradas de Stage08
+
 def build_experimental_evaluation_execution(
     *,
     generated_plain_text: str,
@@ -59,7 +80,27 @@ def build_experimental_evaluation_execution(
     judge_llm_factory: Callable[[], Any],
     upstream_fingerprint: str | None = None,
 ) -> dict[str, Any]:
-    
+    """Empaqueta los argumentos de ``run_evaluation_pipeline`` — separado en
+    su propia función para que ``_run_evaluation_stage`` pueda construir
+    fingerprints de entrada ANTES de ejecutar, sin ejecutar dos veces.
+
+    ``upstream_fingerprint``: el fingerprint COMPUESTO real de la ejecución
+    comprometida de 07 (``state.stages["07_agente_verificador"].
+    fingerprints.composite``, tal como lo deja ``StateStore.commit_execution``
+    tras el COMMIT real de 07) — no se crea un fingerprint paralelo; se
+    propaga el mismo que ya usa el contrato transaccional. El llamador
+    (``evaluation_stagespec_wiring.build_execution_for_stagespec``) lo lee
+    directamente de ``store.load()`` y lo pasa aquí. Queda en ``None`` solo
+    si 07 todavía no se comprometió (o en llamadas manuales/pruebas que no
+    lo necesitan).
+
+    NO incluye ``output_dir``/``numeric_check_output_dir``/``backup_root``/
+    ``_openai_model``: esas 4 claves de infraestructura las agrega el
+    LLAMADOR (ver ``evaluation_stagespec_wiring.build_execution_for_stagespec``,
+    que hace ``{**build_experimental_evaluation_execution(...), "output_dir":
+    ..., ...}``) — no son argumentos de ``run_evaluation_pipeline`` y no
+    pertenecen a esta función."""
+
     return {
         "generated_plain_text": generated_plain_text,
         "sections": sections,
@@ -85,8 +126,7 @@ def build_experimental_evaluation_execution(
         "upstream_fingerprint": upstream_fingerprint,
     }
 
-# Construye el resultado final de Stage08 a partir de la ejecución
-# de la evaluación, registrando si terminó correctamente o con error.
+
 def _build_evaluation_agent_result(
     *,
     attempt_number: int,
@@ -97,12 +137,8 @@ def _build_evaluation_agent_result(
     pipeline_outcome_metadata: dict[str, Any] | None = None,
 ) -> AgentResult:
     now = _now()
-    # Prepara los metadatos del resultado del pipeline;
-    # si no se proporcionan, asume inicialmente una ejecución exitosa.
     outcome_metadata = dict(pipeline_outcome_metadata or {"pipeline_outcome": "SUCCESS"})
 
-   # Si Stage08 falla durante la evaluación, devuelve un resultado rechazado,
-   # registra el error ocurrido y detiene completamente la etapa.
     if exception is not None:
         return AgentResult(
             execution_status=ExecutionStatus.FAILED,
@@ -136,8 +172,6 @@ def _build_evaluation_agent_result(
     validation_errors = final_validation["validation_errors"]
     validation_warnings = final_validation["validation_warnings"]
 
-   # Asigna el estado de calidad de Stage08 según los resultados
-   # de la validación: rechazado, aprobado con advertencias o aprobado.
     if validation_errors:
         quality_status = QualityStatus.REJECTED
     elif validation_warnings:
@@ -145,8 +179,6 @@ def _build_evaluation_agent_result(
     else:
         quality_status = QualityStatus.APPROVED
 
-   # Convierte los avisos y errores de validación en objetos AgentWarning
-   # para registrarlos de forma uniforme dentro del resultado de Stage08.
     warnings = tuple(
         AgentWarning(code=code, severity=WarningSeverity.WARNING, blocking=False, message=code)
         for code in validation_warnings
@@ -155,8 +187,6 @@ def _build_evaluation_agent_result(
         for code in validation_errors
     )
 
-   # Devuelve el resultado final de Stage08 cuando la evaluación terminó,
-   # incluyendo el estado de calidad, métricas, advertencias y artefactos generados.
     return AgentResult(
         execution_status=ExecutionStatus.COMPLETED,
         quality_status=quality_status,
@@ -184,8 +214,7 @@ def _build_evaluation_agent_result(
         completed_at=now,
     )
 
-# Ejecuta Stage08 desde el orquestador, preparando el contexto
-# de evaluación y controlando el intento actual y posibles reejecuciones.
+
 def _run_evaluation_stage(
     *,
     store,
@@ -195,23 +224,29 @@ def _run_evaluation_stage(
     observations: dict[str, Any] | None = None,
     force_rerun: bool = False,
 ):
+    """``custom_run`` de ``StageSpec`` para 08 — mismo patrón que 07
+    (PREPARE/EXECUTE/COMMIT propios vía ``StateStore`` genérico, no un
+    protocolo de 3 funciones separado como 07).
 
-   # Importa las herramientas necesarias para controlar la ejecución de Stage08:
-   # reproducibilidad, persistencia, estado del pipeline, ground truth y LLM Judge.
+    Fingerprint único (A1): ``evaluation_signature`` se calcula UNA vez,
+    antes de EXECUTE, y esa MISMA estructura alimenta tanto el fingerprint
+    transaccional de ``StateStore`` (``SKIPPED_FRESH``) como
+    ``evaluation_manifest.json`` — no hay una segunda representación
+    "débil" en ningún punto.
+    """
+
     from src.adapters.evaluation_fingerprint import (
         build_evaluation_signature,
         compute_evaluation_fingerprint,
     )
     from src.adapters.evaluation_persistence import find_missing_outputs
-    from src.orchestration.pipeline_orchestrator import (
+    from src.orchestration.stage_execution import (
         _outcome_from_committed_stage,
         _outcome_from_result,
     )
     from src.tools.evaluation.ground_truth import resolve_ground_truth_comparable_text
     from src.tools.evaluation.llm_judge import PROMPT_VERSION as JUDGE_PROMPT_VERSION
 
-   # Prepara las rutas, parámetros y metadatos necesarios
-   # para ejecutar Stage08 con la configuración del experimento actual.
     project_dir = Path(project_dir)
     kwargs = dict(spec.build_execution(project_dir, attempt_number))
     output_dir = Path(kwargs.pop("output_dir"))
@@ -223,32 +258,35 @@ def _run_evaluation_stage(
 
     started_at = _now()
 
-   # Carga y valida el ground truth comparable y, con esa información,
-   # construye la firma completa de la evaluación para garantizar trazabilidad y reproducibilidad.
+    # --- Fingerprint único (A1): se calcula ANTES de EXECUTE. Requiere
+    # resolver el Ground Truth (para su hash) — si eso falla (GT ausente,
+    # demasiado corto, etc.), es la MISMA "excepción técnica" que fallaría
+    # dentro de run_evaluation_pipeline; se trata igual (FAILED), sin
+    # ejecutar el resto del pipeline dos veces por accidente.
     try:
-        ground_truth_plain_text, _gt_metadata, _gt_source_path = resolve_ground_truth_comparable_text( #busca y prepara el estado del arte real que se usará como referencia.
+        ground_truth_plain_text, _gt_metadata, _gt_source_path = resolve_ground_truth_comparable_text(
             ground_truth_dir=kwargs["ground_truth_dir"],
-            minimum_words=kwargs["evaluation_policy"]["minimum_ground_truth_words"], #exige que ese ground truth tenga una longitud mínima válida
+            minimum_words=kwargs["evaluation_policy"]["minimum_ground_truth_words"],
             require_explicit_end_heading=kwargs["evaluation_policy"][
                 "require_explicit_ground_truth_end_heading"
             ],
         )
-       # Construye una firma reproducible de la evaluación usando
-       # la configuración, las entradas, la trazabilidad y las versiones utilizadas.
         evaluation_signature = build_evaluation_signature(
             experiment_id=kwargs["experiment_id"],
             evaluation_policy=kwargs["evaluation_policy"],
             openai_model=openai_model_for_signature,
             evaluation_ready_json_path=kwargs["evaluation_ready_json_path"],
             upstream_fingerprint=upstream_fingerprint,  # propagado real de 07 (state.stages[
+            # "07_agente_verificador"].fingerprints.composite), leído por
+            # evaluation_stagespec_wiring.build_execution_for_stagespec y
+            # pasado hasta aquí. Ningún fingerprint paralelo: es el mismo
+            # compuesto que ya usa el contrato transaccional de 07.
             ground_truth_text=ground_truth_plain_text,
             chunks=kwargs["chunks"],
             traceability_rows=kwargs["traceability_rows"],
             llm_judge_prompt_version=JUDGE_PROMPT_VERSION,
         )
-   # Si falla la preparación de la evaluación, registra el error en el estado
-   # del pipeline, guarda fingerprints de respaldo y detiene Stage08.
-    except Exception as exc:  
+    except Exception as exc:  # noqa: BLE001 - excepción técnica real, no se silencia
         result = _build_evaluation_agent_result(
             attempt_number=attempt_number, started_at=started_at, exception=exc, pipeline_result=None,
             pipeline_outcome_metadata=pipeline_outcome_metadata,
@@ -280,12 +318,13 @@ def _run_evaluation_stage(
         dependencies_data={},
     )
 
+    # --- A2: fingerprint vigente por sí solo NO basta -- también deben
+    # estar los 15 outputs. fingerprint vigente + outputs completos ->
+    # SKIPPED_FRESH; fingerprint vigente + outputs faltantes -> reconstruir.
     state = store.load()
     committed = state.stages.get(EVALUATION_STAGE_NAME)
     missing_outputs = find_missing_outputs(output_dir=output_dir)
 
-   # Si Stage08 ya fue ejecutado con exactamente las mismas entradas y configuración,
-   # y sus archivos de salida siguen completos, reutiliza el resultado sin volver a evaluar.
     if (
         committed is not None
         and committed.execution_status == ExecutionStatus.COMPLETED
@@ -295,8 +334,6 @@ def _run_evaluation_stage(
     ):
         return _outcome_from_committed_stage(spec, committed, status="SKIPPED_FRESH")
 
-   # Si existe una ejecución pendiente de Stage08, intenta resolverla
-   # antes de iniciar una nueva evaluación.
     if state.pending_execution is not None and state.pending_execution.target_stage == EVALUATION_STAGE_NAME:
         resume = store.resolve_resume(
             stage_name=EVALUATION_STAGE_NAME, fingerprints=fingerprints, observations=observations
@@ -305,9 +342,7 @@ def _run_evaluation_stage(
             state = store.load()
             attempts_used = state.stages[EVALUATION_STAGE_NAME].attempts_used
             return _outcome_from_result(spec, resume.committed_result, "COMMITTED", attempts_used=attempts_used)
-   
-   # Importa las funciones encargadas de guardar, respaldar y presentar
-   # los resultados producidos durante la evaluación de Stage08.
+
     from src.adapters.evaluation_persistence import (
         backup_existing_outputs,
         build_final_evaluation_report_markdown,
@@ -315,15 +350,11 @@ def _run_evaluation_stage(
         persist_intermediate_numeric_check,
     )
 
-   # Registra formalmente que Stage08 va a comenzar su ejecución
-   # y prepara el contenedor donde se guardarán los artefactos generados.
     prepared = store.prepare_execution(
         target_stage=EVALUATION_STAGE_NAME, intended_action="EXECUTE_EVALUATION", attempt_number=attempt_number
     )
     output_artifacts: dict[str, Any] = {}
 
-   # Ejecuta el pipeline de evaluación y, si termina correctamente,
-   # respalda resultados anteriores y guarda la validación numérica intermedia.
     try:
         pipeline_result = run_evaluation_pipeline(**kwargs)
 
@@ -333,8 +364,6 @@ def _run_evaluation_stage(
             numeric_rows=pipeline_result["factual_audit"]["numeric_rows"],
         )
 
-       # Construye el reporte final de Stage08 reuniendo los resultados
-       # automáticos, el LLM Judge, la auditoría factual y la información de trazabilidad.
         report_markdown = build_final_evaluation_report_markdown(
             experiment_id=kwargs["experiment_id"],
             topic_name=kwargs["topic_name"],
@@ -355,8 +384,9 @@ def _run_evaluation_stage(
             corpus_gap_rows=pipeline_result["corpus_gap_rows"],
         )
 
-       # Construye el manifest de Stage08 para dejar registrado exactamente
-       # qué se evaluó, de dónde vino, con qué modelos/configuración y con qué huellas.
+        # A4: input_dependencies completo para la ruta activa (07 directo).
+        # Sin campos exclusivos de 07C (post_correction_recheck_manifest,
+        # etc.) -- ninguno de esos existe en esta ruta.
         evaluation_manifest = {
             "stage": EVALUATION_STAGE_NAME,
             "created_at": _now(),
@@ -388,34 +418,31 @@ def _run_evaluation_stage(
             "signature": evaluation_signature,
         }
 
-       # Guarda todos los resultados finales de Stage08 y luego importa
-      # las utilidades necesarias para registrar referencias y hashes de los archivos.
         written_paths = persist_evaluation_outputs(
             output_dir=output_dir,
             automatic_metric_rows=pipeline_result["automatic_metrics_result"].automatic_metric_rows,
-            semantic_alignment_rows=pipeline_result["automatic_metrics_result"].semantic_alignment_rows, #resultados de alineación/similitud semántica.
-            bertscore_pair_metadata=pipeline_result["automatic_metrics_result"].bertscore_pair_metadata, #metadatos usados para BERTScore.
-            factual_metric_rows=pipeline_result["factual_audit"]["factual_metric_rows"], #métricas de consistencia factual.
-            citation_rows=pipeline_result["factual_audit"]["citation_rows"], #resultados de la revisión de citas.
-            claim_audit_rows=pipeline_result["factual_audit"]["claim_audit_rows"], #auditoría de los claims.
-            llm_judge_result=pipeline_result["llm_judge_result"], #resultado y puntuaciones del LLM Judge.
-            judge_score_rows=pipeline_result["judge_score_rows"],#brechas detectadas entre el texto generado y el corpus
+            semantic_alignment_rows=pipeline_result["automatic_metrics_result"].semantic_alignment_rows,
+            bertscore_pair_metadata=pipeline_result["automatic_metrics_result"].bertscore_pair_metadata,
+            factual_metric_rows=pipeline_result["factual_audit"]["factual_metric_rows"],
+            citation_rows=pipeline_result["factual_audit"]["citation_rows"],
+            claim_audit_rows=pipeline_result["factual_audit"]["claim_audit_rows"],
+            llm_judge_result=pipeline_result["llm_judge_result"],
+            judge_score_rows=pipeline_result["judge_score_rows"],
             corpus_gap_rows=pipeline_result["corpus_gap_rows"],
             corpus_gap_markdown=pipeline_result["corpus_gap_markdown"],
-            final_selected_metrics=pipeline_result["final_selected_metrics"], #conjunto final de métricas que se reportará.
-            evaluation_summary=pipeline_result["evaluation_summary"], #resumen global de la evaluación.
+            final_selected_metrics=pipeline_result["final_selected_metrics"],
+            evaluation_summary=pipeline_result["evaluation_summary"],
             final_evaluation_report_markdown=report_markdown,
-            evaluation_validation_report=pipeline_result["final_validation"]["evaluation_validation_report"], #resultado de la validación final de Stage08.
-            evaluation_manifest=evaluation_manifest, #manifest de trazabilidad y reproducibilidad.
+            evaluation_validation_report=pipeline_result["final_validation"]["evaluation_validation_report"],
+            evaluation_manifest=evaluation_manifest,
         )
         from src.contracts.agent_input import ArtifactReference
         from src.state.fingerprints import sha256_file
 
-         # Registra cada archivo generado como un artefacto trazable
-         # y construye el resultado final de Stage08 con esos artefactos.
         output_artifacts = {
             name: ArtifactReference(str(path), sha256_file(path)) for name, path in written_paths.items()
         }
+
         result = _build_evaluation_agent_result(
             attempt_number=attempt_number,
             started_at=started_at,
@@ -424,10 +451,7 @@ def _run_evaluation_stage(
             output_artifacts=output_artifacts,
             pipeline_outcome_metadata=pipeline_outcome_metadata,
         )
-
-   # Si ocurre un error durante la ejecución principal de Stage08,
-   # construye un resultado de fallo; después guarda y confirma el resultado final.
-    except Exception as exc:  
+    except Exception as exc:  # noqa: BLE001 - ver docstring del módulo: no se silencia, se registra
         result = _build_evaluation_agent_result(
             attempt_number=attempt_number, started_at=started_at, exception=exc, pipeline_result=None,
             pipeline_outcome_metadata=pipeline_outcome_metadata,

@@ -22,9 +22,9 @@ notebook 08 (usado allí como valor de un campo `"stage"` en su diccionario de
 fingerprint, no como un `stage_name` de `StateStore` ya conectado). Incluirlo
 aquí permite que RETURN/ADVANCE lo validen como destino válido y que la
 invalidación en cascada lo alcance, pero **no implica que exista un
-``StageSpec`` ejecutable para 08** — ver ``pipeline_orchestrator.py`` y el
-informe de la iteración para el detalle de por qué 08 se registra sin
-adaptador todavía.
+``StageSpec`` ejecutable para 08** — ver ``src/orchestration/stage_execution.py``
+(``_stage_registry``) y el informe de la iteración para el detalle de por
+qué 08 se registra sin adaptador todavía.
 """
 
 from __future__ import annotations
@@ -45,10 +45,10 @@ from src.state.pipeline_state import (
 from src.state.state_store import StateStore
 
 # Orden canónico completo conocido, incluida la etapa 07 aunque todavía no
-# tenga StageSpec ejecutable en pipeline_orchestrator.py. Se usa únicamente
-# para validar existencia/orden de destinos de transición y para calcular el
-# alcance de una invalidación en cascada — no implica que el orquestador
-# pueda ejecutar esas etapas todavía.
+# tenga StageSpec ejecutable en src/orchestration/stage_execution.py. Se usa
+# únicamente para validar existencia/orden de destinos de transición y para
+# calcular el alcance de una invalidación en cascada — no implica que el
+# orquestador pueda ejecutar esas etapas todavía.
 CANONICAL_STAGE_ORDER: tuple[str, ...] = (
     "03_agente_extraccion_kb",
     "03B_extraccion_cuantitativa_kb",

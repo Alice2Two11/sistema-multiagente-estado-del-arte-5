@@ -1,7 +1,11 @@
 """Reconstrucción causal del ``decision_log`` real de un experimento --
-compartida entre el orquestador (``pipeline_orchestrator.py``, para
-reconocer un estado terminal ya comprometido en un restart) y los
-adaptadores que resuelven dependencias upstream comprometidas (ej.
+compartida entre el motor de orquestación (hoy
+``src/orchestration_langgraph``, vía
+``src.orchestration.stage_execution._check_already_terminal_state``, para
+reconocer un estado terminal ya comprometido en un restart -- la máquina
+de estados propia, ``pipeline_orchestrator.py``, cumplía este mismo rol
+antes de retirarse en MAIN 5 Bloque 6) y los adaptadores que resuelven
+dependencias upstream comprometidas (ej.
 ``agent06_verification_handoff.py``, para que 07 encuentre el ÚLTIMO
 06 causalmente válido, no simplemente el más reciente cronológicamente
 ni el ``StageState`` mutable vigente -- ambos pueden reflejar una

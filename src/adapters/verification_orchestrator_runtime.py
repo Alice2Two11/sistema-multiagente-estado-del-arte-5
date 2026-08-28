@@ -580,7 +580,7 @@ def build_experimental_verification_execution(
         Agent07RuntimeInput,
         build_agent07_runtime_dependencies,
     )
-    from src.orchestration.pipeline_orchestrator import (
+    from src.orchestration.stage_execution import (
         DRAFT_STAGE_NAME,
         ensure_pipeline_state,
     )

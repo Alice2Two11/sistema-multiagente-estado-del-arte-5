@@ -2,10 +2,12 @@
 ``decision_engine.validate_transition`` dentro de ``run_stage()``) a una
 decisión de ruteo para LangGraph.
 
-Misma semántica exacta que ``pipeline_orchestrator._apply_stage_transition``
--- de hecho, la implementación fue trasladada revisando línea por línea
-contra esa función para no introducir una segunda política de transición
-paralela. Diferencia de forma, no de fondo: en vez de devolver
+Misma semántica exacta que tenía ``pipeline_orchestrator._apply_stage_transition``
+antes de retirarse (ese archivo se eliminó por completo en el Bloque 6,
+una vez validada la equivalencia) -- la implementación fue trasladada en
+su momento revisando línea por línea contra esa función, para no
+introducir una segunda política de transición paralela. Diferencia de
+forma, no de fondo: en vez de devolver
 ``(nuevo_current_stage, debe_detenerse)`` para un bucle ``for`` imperativo,
 devuelve el nombre del nodo destino (o ``"__end__"``) para un edge
 condicional de LangGraph.

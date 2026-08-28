@@ -1,11 +1,11 @@
-"""Ensamblado y compilación del ``StateGraph`` de MAIN 5.
+"""Ensamblado y compilación del ``StateGraph`` de MAIN 5 -- único motor de
+orquestación del sistema desde el Bloque 6.
 
 Construye la topología del grafo a partir de
 ``decision_engine.CANONICAL_STAGE_ORDER`` -- la MISMA fuente única de
-verdad del orden de etapas que usa la máquina de estados propia (nunca la
-duplica a mano). No importa nada de
-``src.orchestration.pipeline_orchestrator`` -- ni el módulo, ni ninguno de
-sus símbolos, directa ni indirectamente.
+verdad del orden de etapas que usaba la máquina de estados propia antes de
+retirarse (``pipeline_orchestrator.py``, eliminado en el Bloque 6). Este
+módulo nunca importó ni importa ese archivo.
 """
 
 from __future__ import annotations
@@ -68,11 +68,10 @@ def run_pipeline_via_langgraph(
     observations: dict | None = None,
     recursion_limit: int = 50,
 ):
-    """Punto de entrada equivalente a
-    ``pipeline_orchestrator.run_pipeline`` pero corriendo sobre el grafo
-    compilado. Misma firma de argumentos relevantes (``start_stage``
-    tiene aquí el nombre ``entry_stage`` dentro del estado, por
-    consistencia con el resto de ``GraphState``)."""
+    """Punto de entrada de orquestación global del sistema, corriendo
+    sobre el grafo compilado. ``start_stage`` tiene aquí el nombre
+    ``entry_stage`` dentro del estado, por consistencia con el resto de
+    ``GraphState``."""
 
     app = compile_pipeline_graph()
     initial_state: GraphState = {
@@ -94,8 +93,9 @@ def run_pipeline_via_langgraph(
 # ---------------------------------------------------------------------------
 # CLI para uso directo en Colab: `python -m src.orchestration_langgraph.pipeline_graph`
 #
-# Bloque 5 (MAIN 5): mismo contrato exacto que la CLI de
-# `pipeline_orchestrator.py` (mismos flags, misma semántica de exit code)
+# Bloque 5 (MAIN 5): mismo contrato exacto que tenía la CLI de la máquina
+# de estados propia antes de retirarse (``pipeline_orchestrator.py``,
+# eliminado en el Bloque 6) -- mismos flags, misma semántica de exit code
 # -- para que cualquier invocador externo (scripts/run_pipeline.py,
 # Corrida_03_a_08.ipynb) pueda apuntar aquí sin cambiar nada más que el
 # nombre del módulo.

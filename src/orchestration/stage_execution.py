@@ -1,17 +1,18 @@
 """Infraestructura de ejecución de UNA etapa del pipeline, independiente de
 qué motor recorre las etapas entre sí.
 
-Extraído de ``pipeline_orchestrator.py`` (Bloque 1 de la migración a
-LangGraph, MAIN 5) sin cambiar una sola línea de lógica -- solo la
-ubicación. Contiene todo lo que responde a "¿cómo ejecuto/resuelvo/salto
-una etapa dado su ``StageSpec``?", nunca "¿qué etapa sigue después?" (eso
-sigue siendo responsabilidad exclusiva del motor de orquestación que
-consuma este módulo -- hoy ``pipeline_orchestrator.run_pipeline``, más
-adelante también ``src/orchestration_langgraph``).
+Extraído en su momento de la máquina de estados propia,
+``pipeline_orchestrator.py`` (Bloque 1 de la migración a LangGraph, MAIN 5;
+ese archivo se retiró definitivamente en el Bloque 6, una vez validada la
+equivalencia) sin cambiar una sola línea de lógica -- solo la ubicación.
+Contiene todo lo que responde a "¿cómo ejecuto/resuelvo/salto una etapa
+dado su ``StageSpec``?", nunca "¿qué etapa sigue después?" (eso es
+responsabilidad exclusiva del motor de orquestación que consuma este
+módulo -- hoy, únicamente, ``src/orchestration_langgraph``).
 
-No importa nada de ``pipeline_orchestrator.py`` -- la dependencia va en un
-solo sentido: los motores de orquestación importan de aquí, nunca al
-revés. La única referencia a los constructores concretos por etapa
+Este módulo no importa nada del motor de orquestación -- la dependencia va
+en un solo sentido: el motor importa de aquí, nunca al revés. La única
+referencia a los constructores concretos por etapa
 (``src.orchestration.stage_constructors``) es un import diferido dentro de
 ``_stage_registry()``, exactamente el mismo patrón que ya usaba esta
 función para los protocolos de ``src.runtime.*`` antes de esta extracción

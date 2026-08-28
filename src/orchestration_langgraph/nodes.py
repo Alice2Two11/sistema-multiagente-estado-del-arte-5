@@ -6,7 +6,8 @@ _reconcile_pending_execution_for_other_stage``) y en ``routing.
 resolve_transition`` para decidir a dónde ir después -- ningún nodo
 reimplementa lógica de ejecución de etapa ni de transición.
 
-No importa nada de ``src.orchestration.pipeline_orchestrator``.
+No depende de ninguna máquina de estados propia -- ``pipeline_orchestrator.py``
+se retiró por completo en el Bloque 6; este módulo nunca lo importó ni lo importa.
 """
 
 from __future__ import annotations

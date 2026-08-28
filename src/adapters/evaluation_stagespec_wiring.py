@@ -45,7 +45,7 @@ def build_execution_for_stagespec(project_dir: str | Path, attempt_number: int =
             "active_experiment.json['evaluation_policy'] debe ser un diccionario no vacío."
         )
 
-    from src.orchestration.pipeline_orchestrator import ensure_pipeline_state
+    from src.orchestration.stage_execution import ensure_pipeline_state
 
     store = ensure_pipeline_state(project_dir)
 
