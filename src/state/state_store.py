@@ -1,9 +1,9 @@
-"""Transactional persistence for :class:`PipelineState`.
+# ============================================================
+# ALMACENAMIENTO Y PERSISTENCIA DEL ESTADO DEL PIPELINE
+# Gestiona el estado durable de las etapas, ejecuciones pendientes,
+# resultados comprometidos, fingerprints, ciclos y reanudación.
+# ============================================================
 
-This module owns persistence and PREPARE/COMMIT/RESUME mechanics only.
-Agent execution remains outside ``StateStore`` and no orchestration graph
-rules are implemented here.
-"""
 
 from __future__ import annotations
 
@@ -26,19 +26,23 @@ from src.state.pipeline_state import (
     StageState,
 )
 
-
+# Representa el resultado de preparar una nueva ejecución,
+# guardando el identificador de decisión y el estado actualizado del pipeline.
 @dataclass(frozen=True, slots=True)
 class PrepareResult:
     decision_id: str
     state: PipelineState
 
-
+# Representa cómo debe resolverse una ejecución pendiente al reanudar el pipeline,
+# incluyendo la acción tomada, el nuevo estado y un resultado ya comprometido si existe.
 @dataclass(frozen=True, slots=True)
 class ResumeResolution:
     action: str
     state: PipelineState
     committed_result: AgentResult | None = None
 
+    # Valida que la acción de reanudación sea una de las opciones permitidas
+    # y evita crear resultados de reanudación con estados desconocidos.
     def __post_init__(self) -> None:
         if self.action not in {"NO_PENDING", "COMMITTED", "REEXECUTE"}:
             raise ValueError(f"unsupported resume action: {self.action}")
@@ -47,6 +51,8 @@ class ResumeResolution:
 class StateStore:
     """Persist and transactionally update a single pipeline-state document."""
 
+    # Inicializa el almacenamiento persistente del pipeline,
+    # definiendo la ruta del estado y el directorio donde se guardarán los resultados de agentes.
     def __init__(
         self,
         state_path: str | Path,
