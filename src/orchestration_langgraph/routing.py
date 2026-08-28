@@ -94,9 +94,12 @@ def resolve_transition(
     # HALT_STAGE o STOP_PIPELINE: se detiene el grafo.
     return END, attempt_numbers, None
 
-
+# Lee del estado el destino que ya fue calculado por resolve_transition()
+# y se lo devuelve a LangGraph para continuar el recorrido del grafo.
 def route_after_stage(state: "GraphState") -> str:
     target = state.get("route_target")
+    # Si el nodo anterior no dejó definido un destino, detiene la ejecución
+    # porque la transición debió resolverse previamente.
     if not target:
         raise RuntimeError(
             "route_after_stage: state['route_target'] ausente -- el nodo "
