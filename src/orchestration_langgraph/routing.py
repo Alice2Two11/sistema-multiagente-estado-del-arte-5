@@ -1,28 +1,8 @@
-"""Traduce ``StageOutcome.next_action`` (ya validado por
-``decision_engine.validate_transition`` dentro de ``run_stage()``) a una
-decisión de ruteo para LangGraph.
-
-Misma semántica exacta que tenía ``pipeline_orchestrator._apply_stage_transition``
-antes de retirarse (ese archivo se eliminó por completo en el Bloque 6,
-una vez validada la equivalencia) -- la implementación fue trasladada en
-su momento revisando línea por línea contra esa función, para no
-introducir una segunda política de transición paralela. Diferencia de
-forma, no de fondo: en vez de devolver
-``(nuevo_current_stage, debe_detenerse)`` para un bucle ``for`` imperativo,
-devuelve el nombre del nodo destino (o ``"__end__"``) para un edge
-condicional de LangGraph.
-
-``resolve_transition()`` es la función compartida real -- se llama DESDE
-CADA NODO (ver ``nodes.py``), inmediatamente después de ``run_stage()``,
-porque necesita poder mutar ``StateStore`` (``resolve_cycle_if_active``/
-``apply_return_with_cycle``) y devolver el ``attempt_numbers`` actualizado
-como parte del estado del nodo -- LangGraph separa "los nodos mutan
-estado" de "los edges condicionales solo leen estado para decidir", así
-que la decisión ya viene resuelta quando el edge condicional
-(``route_after_stage``) se evalúa: ese edge solo lee
-``state["route_target"]``, nunca vuelve a llamar a ``decision_engine`` ni
-a tocar ``StateStore``.
-"""
+# ============================================================
+# ENRUTAMIENTO DE TRANSICIONES DEL PIPELINE CON LANGGRAPH
+# Traduce las decisiones de cada etapa en el siguiente nodo del grafo,
+# gestionando avances, reintentos, retornos, ciclos y finalización.
+# ============================================================
 
 from __future__ import annotations
 
@@ -38,48 +18,53 @@ from src.orchestration_langgraph.graph_state import GraphState
 from langgraph.graph import END
 
 
+# Resuelve la transición que debe seguir el pipeline después de una etapa,
+# actualizando intentos y devolviendo el nodo destino que usará LangGraph.
 def resolve_transition(
-    outcome: StageOutcome,
+    outcome: StageOutcome, #resultado de la etapa que acaba de ejecutarse
     *,
-    store,
-    stage_key: str,
-    attempt_number: int,
-    attempt_numbers: dict[str, int],
-    until: str | None,
-) -> tuple[str, dict[str, int], StageOutcome | None]:
-    """Devuelve ``(route_target, attempt_numbers_actualizado,
-    outcome_sintetico_o_None)``.
+    store, #acceso al estado persistido del pipeline
+    stage_key: str, #identifica qué etapa acaba de terminar
+    attempt_number: int, #número de intento de esa ejecución
+    attempt_numbers: dict[str, int], #registro de intentos de todas las etapas
+    until: str | None, #etapa en la que el usuario pidió detener el pipeline
+) -> tuple[str, dict[str, int], StageOutcome | None]: #nodo destino al que debe ir LangGraph; diccionario actualizado de intentos por etapa;
 
-    ``outcome_sintetico`` es no-``None`` únicamente en el caso
-    ``CYCLE_EXHAUSTED`` (mismo ``StageOutcome`` sintético que
-    ``_apply_stage_transition`` agrega a ``outcomes`` en ese caso) -- el
-    nodo llamador debe agregarlo a ``state["outcomes"]`` si no es
-    ``None``.
-    """
+    attempt_numbers = dict(attempt_numbers) #toma el diccionario original de intentos y hace una copia
 
-    attempt_numbers = dict(attempt_numbers)
-
+    # Si el usuario pidió detener el pipeline en esta etapa,
+    # finaliza el grafo inmediatamente.
     if until is not None and stage_key == until:
         return END, attempt_numbers, None
-
+        
+    # Si la etapa terminó correctamente y solicita avanzar,
+    # continúa hacia la etapa indicada o finaliza si ya no existe destino.
     if outcome.next_action == "ADVANCE":
         if outcome.target_stage is None:
             return END, attempt_numbers, None  # pipeline completo
+        # Si se sale correctamente del ciclo redactor-verificador,
+        # marca el ciclo como resuelto en el estado persistido.
         if stage_key == de.WRITER_VERIFIER_TRIGGER_STAGE:
             resolve_cycle_if_active(store)
         return outcome.target_stage, attempt_numbers, None
-
+        
+    # Si la etapa solicita un reintento, incrementa su contador
+    # y vuelve a ejecutar el mismo nodo.
     if outcome.next_action == "RETRY":
         attempt_numbers[stage_key] = attempt_number + 1
         return stage_key, attempt_numbers, None
-
+        
+    # Si la etapa solicita volver a una etapa anterior,
+    # aplica las reglas del ciclo controlado y actualiza el estado.
     if outcome.next_action == "RETURN":
-        cycle_result = apply_return_with_cycle(
+        cycle_result = apply_return_with_cycle(# 07<->06
             store,
             from_stage=stage_key,
             target_stage=outcome.target_stage,
             reason=f"INVALIDATED_BY_RETURN_FROM_{stage_key}",
         )
+        # Si el ciclo alcanzó su límite de retornos,
+        # genera un resultado sintético y detiene el pipeline.
         if cycle_result.cycle_exhausted:
             synthetic = StageOutcome(
                 key=stage_key,
@@ -95,10 +80,15 @@ def resolve_transition(
                 reason_code="WRITER_VERIFIER_CYCLE_EXHAUSTED",
             )
             return END, attempt_numbers, synthetic
+        
+        # Si el retorno es válido, elimina los contadores de intento
+        # de la etapa destino y de todas las etapas posteriores.
         for stage_key_to_clear in CANONICAL_STAGE_ORDER[
             CANONICAL_STAGE_ORDER.index(outcome.target_stage):
         ]:
             attempt_numbers.pop(stage_key_to_clear, None)
+        
+        # Retorna a la etapa solicitada para continuar el ciclo.
         return outcome.target_stage, attempt_numbers, None
 
     # HALT_STAGE o STOP_PIPELINE: se detiene el grafo.
@@ -106,11 +96,6 @@ def resolve_transition(
 
 
 def route_after_stage(state: "GraphState") -> str:
-    """Callback de edge condicional de LangGraph -- SOLO lee
-    ``state["route_target"]``, ya resuelto por ``resolve_transition()``
-    dentro del nodo que acaba de correr. Nunca decide nada por sí mismo,
-    nunca toca ``StateStore``."""
-
     target = state.get("route_target")
     if not target:
         raise RuntimeError(
