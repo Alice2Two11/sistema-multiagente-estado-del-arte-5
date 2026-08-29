@@ -60,6 +60,8 @@ class StateStore:
         agent_results_directory: str | Path | None = None,
     ) -> None:
         self.state_path = self._normalize_path(state_path, "state_path")
+        # Si no se proporciona una carpeta específica para los resultados,
+        # crea una automáticamente junto al archivo principal de estado.
         if agent_results_directory is None:
             agent_results_directory = (
                 self.state_path.parent / f"{self.state_path.stem}_agent_results"
@@ -70,10 +72,12 @@ class StateStore:
         )
 
     @staticmethod
+    # Normaliza y valida las rutas utilizadas por StateStore,
+    # asegurando que sean cadenas o Path válidos y que no estén vacíos.
     def _normalize_path(value: str | Path, field_name: str) -> Path:
-        if isinstance(value, bool) or not isinstance(value, (str, Path)):
+        if isinstance(value, bool) or not isinstance(value, (str, Path)): # Rechaza valores booleanos o tipos que no sean rutas válidas.
             raise TypeError(f"{field_name} must be a string or pathlib.Path")
-        path = Path(value)
+        path = Path(value)  # Convierte el valor recibido en un objeto Path.
         if not str(path).strip():
             raise ValueError(f"{field_name} must not be empty")
         return path
@@ -82,12 +86,16 @@ class StateStore:
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    # Valida que un valor sea una cadena de texto no vacía
+    # y devuelve su contenido eliminando espacios innecesarios.
     @staticmethod
     def _validate_non_empty_string(value: Any, field_name: str) -> str:
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, str) or not value.strip(): # Rechaza valores que no sean texto o que estén vacíos.
             raise ValueError(f"{field_name} must be a non-empty string")
         return value.strip()
 
+    # Inicializa por primera vez el estado persistente del pipeline.
+    # Evita sobrescribir un estado existente, salvo que se autorice explícitamente.
     def initialize(self, state: PipelineState, *, overwrite: bool = False) -> PipelineState:
         if not isinstance(state, PipelineState):
             raise TypeError("state must be a PipelineState")
@@ -96,6 +104,8 @@ class StateStore:
         self.save(state)
         return state
 
+    # Carga desde disco el estado persistente del pipeline
+    # y lo reconstruye como un objeto PipelineState.
     def load(self) -> PipelineState:
         if not self.state_path.is_file():
             raise FileNotFoundError(f"pipeline state not found: {self.state_path}")
@@ -103,11 +113,15 @@ class StateStore:
             payload = json.load(handle)
         return PipelineState.from_dict(payload)
 
+    # Guarda de forma persistente el estado actual del pipeline,
+    # asegurando que sea un PipelineState válido antes de escribirlo en disco.
     def save(self, state: PipelineState) -> None:
         if not isinstance(state, PipelineState):
             raise TypeError("state must be a PipelineState")
         atomic_write_json(self.state_path, state.to_dict())
 
+    # Prepara una nueva ejecución del pipeline, cargando el estado actual
+    # y comprobando que no exista otra ejecución pendiente antes de continuar.
     def prepare_execution(
         self,
         *,
@@ -117,10 +131,12 @@ class StateStore:
         decision_id: str | None = None,
         prepared_at: str | None = None,
     ) -> PrepareResult:
-        state = self.load()
-        if state.pending_execution is not None:
+        state = self.load()     # Carga el estado persistido actual del pipeline.
+        if state.pending_execution is not None:     # Impide preparar una nueva ejecución si ya existe otra pendiente.
             raise RuntimeError("a pending execution already exists")
 
+        # Valida los datos básicos de la ejecución antes de crearla:
+        # comprueba la etapa, la acción solicitada y que el número de intento sea válido.
         target_stage = self._validate_non_empty_string(target_stage, "target_stage")
         intended_action = self._validate_non_empty_string(
             intended_action,
@@ -131,6 +147,8 @@ class StateStore:
         if attempt_number < 1:
             raise ValueError("attempt_number must be greater than or equal to 1")
 
+        # Define los identificadores y la fecha de preparación de la ejecución:
+        # valida los valores recibidos o los genera automáticamente si no fueron proporcionados.
         decision_id = (
             self._validate_non_empty_string(decision_id, "decision_id")
             if decision_id is not None
@@ -142,6 +160,8 @@ class StateStore:
             else self._now_iso()
         )
 
+        # Construye la ejecución pendiente con todos sus datos,
+        # la incorpora al estado del pipeline y la guarda
         pending = PendingExecution(
             decision_id=decision_id,
             target_stage=target_stage,
@@ -153,23 +173,27 @@ class StateStore:
         self.save(prepared_state)
         return PrepareResult(decision_id=decision_id, state=prepared_state)
 
+    # Construye la ruta donde se guardará el resultado de un agente,
+    # usando el decision_id como nombre único del archivo JSON.
     def _agent_result_path(self, decision_id: str) -> Path:
         decision_id = self._validate_non_empty_string(decision_id, "decision_id")
         return self.agent_results_directory / f"{decision_id}.json"
 
+    # Guarda de forma persistente el resultado producido por una ejecución,
+    # asociándolo con su decision_id para poder confirmarlo o recuperarlo después.
     def persist_agent_result(self, decision_id: str, result: AgentResult) -> Path:
         """Persist an EXECUTE result for later COMMIT or RESUME.
-
         EXECUTE itself remains outside ``StateStore``. This helper only stores
         the already produced result using the transaction decision identifier.
         """
-
         if not isinstance(result, AgentResult):
             raise TypeError("result must be an AgentResult")
         path = self._agent_result_path(decision_id)
         atomic_write_json(path, result.to_dict())
         return path
 
+    # Busca y recupera un AgentResult previamente guardado a partir
+    # de su decision_id; si no existe ningún archivo asociado, devuelve None.
     def find_persisted_agent_result(self, decision_id: str) -> AgentResult | None:
         path = self._agent_result_path(decision_id)
         if not path.is_file():
@@ -178,24 +202,28 @@ class StateStore:
             payload = json.load(handle)
         return AgentResult.from_dict(payload)
 
+    # Guarda el resultado final de la etapa que acaba de ejecutarse.
     @staticmethod
     def _normalize_fingerprints(
         fingerprints: Any,
     ):
         from src.state.pipeline_state import StageFingerprints
-
         if isinstance(fingerprints, StageFingerprints):
             value = fingerprints
         elif isinstance(fingerprints, Mapping):
             value = StageFingerprints.from_dict(fingerprints)
         else:
             raise TypeError("fingerprints must be StageFingerprints or a mapping")
-
         required = (value.input, value.config, value.dependencies, value.composite)
         if any(not isinstance(item, str) or not item.strip() for item in required):
             raise ValueError("all stage fingerprints must be present and non-empty")
         return value
 
+    # Guarda el resultado final de la etapa que acaba de ejecutarse
+    # y verifica que coincida con la ejecución que estaba pendiente.
+    #comprueba que el resultado pertenezca a la ejecución que estaba pendiente;
+    #valida que la etapa, el intento y los fingerprints coincidan;
+    #prepara la fecha en la que ese resultado va a quedar guardado oficialmente.
     def commit_execution(
         self,
         *,
@@ -253,17 +281,17 @@ class StateStore:
             last_error=result.error,
             updated_at=committed_at,
         )
-
+        # Actualiza el estado de la etapa y registra los artefactos generados.
         updated_stages = dict(state.stages)
         updated_stages[stage_name] = updated_stage
-
         updated_artifacts = dict(state.artifacts)
         for artifact_name, artifact_reference in result.output_artifacts.items():
             updated_artifacts[artifact_name] = ArtifactState(
                 reference=artifact_reference,
                 created_at=result.completed_at or committed_at,
             )
-
+        # Registra en el historial qué etapa se ejecutó, qué decidió
+        # y cuál fue el resultado obtenido.
         log_entry = DecisionLogEntry(
             decision_id=decision_id,
             timestamp=committed_at,
@@ -276,7 +304,8 @@ class StateStore:
             requested_transition=result.requested_transition.to_dict(),
             result=result.to_dict(),
         )
-
+        # Construye el nuevo estado del pipeline con la ejecución ya confirmada
+        # y elimina la ejecución pendiente porque ya terminó.
         committed_state = replace(
             state,
             identity=replace(state.identity, updated_at=committed_at),
@@ -288,6 +317,8 @@ class StateStore:
         self.save(committed_state)
         return committed_state
 
+    # Cancela una ejecución pendiente y deja el pipeline
+    # sin ninguna etapa marcada como pendiente.
     def cancel_pending_execution(self) -> PipelineState:
         state = self.load()
         if state.pending_execution is None:
@@ -296,6 +327,8 @@ class StateStore:
         self.save(cancelled_state)
         return cancelled_state
 
+    # Resuelve qué hacer cuando el pipeline se reanuda
+    # y encuentra una ejecución que había quedado pendiente.
     def resolve_resume(
         self,
         *,
@@ -305,14 +338,17 @@ class StateStore:
     ) -> ResumeResolution:
         state = self.load()
         pending = state.pending_execution
+        # Si no hay nada pendiente, no es necesario recuperar ni repetir nada.
         if pending is None:
             return ResumeResolution(action="NO_PENDING", state=state)
-
         result = self.find_persisted_agent_result(pending.decision_id)
+        # Si no existe un resultado guardado, cancela la ejecución pendiente
+        # y deja la etapa lista para ejecutarse nuevamente.
         if result is None:
             cancelled = self.cancel_pending_execution()
             return ResumeResolution(action="REEXECUTE", state=cancelled)
 
+        # Si el resultado sí existe, lo confirma oficialmente mediante COMMIT.
         committed = self.commit_execution(
             decision_id=pending.decision_id,
             result=result,
@@ -326,6 +362,8 @@ class StateStore:
             committed_result=result,
         )
 
+    # Agrega una nueva decisión al historial del pipeline
+    # y guarda el estado actualizado.
     def append_decision_log(
         self,
         entry: DecisionLogEntry,
