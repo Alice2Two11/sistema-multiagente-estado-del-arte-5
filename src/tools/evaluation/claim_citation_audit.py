@@ -58,13 +58,16 @@ comportamientos se reproducen aquí exactamente con
 diseño de esta migración, es el comportamiento real que produce
 ``df_traceability.groupby(...)`` sin argumentos adicionales.
 
-Veredictos y niveles de riesgo problemáticos (preservados literales)
------------------------------------------------------------------------
-``PROBLEM_VERDICTS = {"partially_supported", "unclear", "unsupported"}``,
-``PROBLEM_RISK_LEVELS = {"medium", "high"}`` — un claim activo cuenta como
-"problema" si su veredicto está en la primera lista, O su riesgo está en
-la segunda, O ``correction_needed`` es verdadero (OR lógico de las tres
-condiciones, exactamente como en el notebook).
+Veredictos problemáticos y tasa de alucinación
+--------------------------------------------------
+``PROBLEM_VERDICTS = {"partially_supported", "unclear", "unsupported"}`` y
+``PROBLEM_RISK_LEVELS = {"medium", "high"}`` se conservan para el conteo
+diagnóstico ``problem_claims``. Sin embargo, la métrica
+``hallucination_rate`` usa una definición más estricta: solo considera como
+alucinación operacional los claims activos cuyo veredicto final es
+``unsupported``. Los claims ``partially_supported`` o ``unclear`` se mantienen
+como problemas de soporte o evaluación, pero no se contabilizan
+automáticamente como alucinaciones.
 
 Importar este módulo no lee archivos, no llama a OpenAI y no tiene
 efectos secundarios. Las funciones puras reciben ``list[dict]`` ya
@@ -262,6 +265,8 @@ def compute_claim_factual_metrics(active_claims: list[dict[str, Any]]) -> dict[s
 
     supported_claims = int(sum(1 for row in active_claims if row["verdict"] == "supported"))
 
+    # Conteo diagnóstico amplio: conserva la semántica histórica de
+    # ``problem_claims`` para no romper consumidores existentes.
     problem_claim_count = int(
         sum(
             1
@@ -272,8 +277,16 @@ def compute_claim_factual_metrics(active_claims: list[dict[str, Any]]) -> dict[s
         )
     )
 
+    # Tasa de alucinación estricta. En el contrato actual del Agente 07 no
+    # existe el veredicto ``contradicted``; por ello solo ``unsupported`` se
+    # contabiliza como alucinación operacional. Los casos
+    # ``partially_supported`` y ``unclear`` no se cuentan como alucinación.
+    hallucinated_claim_count = int(
+        sum(1 for row in active_claims if row["verdict"] == "unsupported")
+    )
+
     factual_precision = supported_claims / total_active_claims
-    hallucination_rate = problem_claim_count / total_active_claims
+    hallucination_rate = hallucinated_claim_count / total_active_claims
     evidence_coverage = float(
         sum(1 for row in active_claims if to_bool(row["evidence_present"])) / total_active_claims
     )
@@ -381,8 +394,9 @@ def build_factual_metric_rows(
             "metric": "hallucination_rate",
             "value": hallucination_rate,
             "description": (
-                "Claims parcialmente soportados, ambiguos, "
-                "no soportados, de riesgo medio/alto o pendientes."
+                "Proporción de claims activos con veredicto unsupported. "
+                "Los claims parcialmente soportados o ambiguos no se "
+                "consideran automáticamente alucinaciones."
             ),
         },
         {
