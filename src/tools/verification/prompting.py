@@ -202,9 +202,21 @@ def build_correction_messages(
         "evidence_id sueltos: cada elemento debe ser {\"source_filename\": <string>, "
         "\"chunk_id\": <string>}, copiados exactamente de source_filename/chunk_id en "
         "eligible_evidence -- nunca [\"E03\"] ni el evidence_id como texto. "
+        "evidence_ids es un campo DISTINTO y NO sigue el formato de old_citation_refs/"
+        "new_citation_refs: es una lista de IDs simples en string (ej. [\"E03\", \"E07\"]), "
+        "copiados del campo evidence_id de eligible_evidence -- NUNCA objetos "
+        "{source_filename, chunk_id}. No confundas los dos campos: evidence_ids identifica "
+        "QUÉ evidencia se usó (IDs sueltos); old_citation_refs/new_citation_refs describe "
+        "citas textuales dentro del claim (objetos con source_filename+chunk_id). "
         "old_numeric_pairs y new_numeric_pairs son listas de PARES [valor_antiguo, "
         "valor_nuevo], cada par una lista de EXACTAMENTE 2 strings -- nunca un objeto "
-        "{\"old_value\":...} ni una lista de un solo elemento."
+        "{\"old_value\":...} ni una lista de un solo elemento. "
+        "change_scope tiene un valor válido adicional según el caso: cuando "
+        "correction_decision NO es PROPOSE_CHANGE, change_scope debe ser exactamente \"NONE\" "
+        "(igual que semantic_change_level); cuando correction_decision SÍ es PROPOSE_CHANGE, "
+        "change_scope debe ser uno de allowed_change_scopes (TOKEN/PHRASE/CLAUSE/SENTENCE/"
+        "MULTI_SENTENCE) y NUNCA \"NONE\" -- \"NONE\" solo es válido para change_scope cuando "
+        "no hay corrección."
     )
     evidence = [{
         "evidence_id": x["evidence_id"], "source_filename": x["source_filename"],
@@ -259,6 +271,18 @@ def build_correction_messages(
             "numeric_pairs_shape_rule": (
                 "old_numeric_pairs and new_numeric_pairs are lists of 2-element string pairs "
                 "[old_value, new_value] -- never an object with keys like old_value/new_value."
+            ),
+            "evidence_ids_shape_rule": (
+                "evidence_ids is a list of bare string IDs (e.g. \"E03\"), copied from the "
+                "evidence_id field of eligible_evidence. It is NOT the same shape as "
+                "old_citation_refs/new_citation_refs -- never put {source_filename, chunk_id} "
+                "objects into evidence_ids."
+            ),
+            "change_scope_none_rule": (
+                "change_scope must be exactly \"NONE\" when correction_decision != "
+                "'PROPOSE_CHANGE' (matching semantic_change_level). When correction_decision "
+                "== 'PROPOSE_CHANGE', change_scope must be one of allowed_change_scopes and "
+                "must never be \"NONE\"."
             ),
         },
     }

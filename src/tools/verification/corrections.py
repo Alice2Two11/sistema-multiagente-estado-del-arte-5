@@ -273,12 +273,19 @@ def validate_correction_response(
         if action not in CORRECTION_ACTION_TYPES: raise ValueError("CORRECTION_ACTION_UNKNOWN")
         if out["llm_correction_recommendation"] is not True:
             raise ValueError("CORRECTION_RECOMMENDATION_CONTRADICTION")
+        if out["change_scope"] not in CORRECTION_CHANGE_SCOPES: raise ValueError("CORRECTION_CHANGE_SCOPE_UNKNOWN")
+        if out["semantic_change_level"] not in CORRECTION_SEMANTIC_CHANGE_LEVELS: raise ValueError("CORRECTION_SEMANTIC_LEVEL_UNKNOWN")
     else:
         if action is not None: raise ValueError("CORRECTION_ACTION_NOT_ALLOWED_FOR_DECISION")
         if out["llm_correction_recommendation"] is not False:
             raise ValueError("CORRECTION_RECOMMENDATION_CONTRADICTION")
-    if out["change_scope"] not in CORRECTION_CHANGE_SCOPES: raise ValueError("CORRECTION_CHANGE_SCOPE_UNKNOWN")
-    if out["semantic_change_level"] not in CORRECTION_SEMANTIC_CHANGE_LEVELS: raise ValueError("CORRECTION_SEMANTIC_LEVEL_UNKNOWN")
+        # Espejo exacto del contrato downstream (validate_correction_proposal_contract,
+        # CORRECTION_PROPOSAL_EMPTY_RESULT_CHANGE_INCOHERENT): cuando no hay corrección,
+        # change_scope y semantic_change_level deben ser AMBOS "NONE" -- "NONE" no está en
+        # CORRECTION_CHANGE_SCOPES (que solo lista alcances de un cambio real), así que aquí
+        # se exige explícitamente en vez de contra ese enum.
+        if out["change_scope"] != "NONE": raise ValueError("CORRECTION_CHANGE_SCOPE_UNKNOWN")
+        if out["semantic_change_level"] != "NONE": raise ValueError("CORRECTION_SEMANTIC_LEVEL_UNKNOWN")
     if type(out["llm_correction_recommendation"]) is not bool: raise ValueError("CORRECTION_FIELD_INVALID:llm_correction_recommendation")
     out["evidence_ids"]=_strings(out["evidence_ids"],"evidence_ids")
     if not set(out["evidence_ids"]).issubset(set(allowed_evidence_ids)): raise ValueError("UNKNOWN_EVIDENCE_ID")
