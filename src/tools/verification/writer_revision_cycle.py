@@ -254,13 +254,28 @@ def classify_verification_transition(
        no se pueden interpretar con certeza.
     5. Rondas agotadas -> HALT_STAGE, incluso si aún quedan problemas
        corregibles con evidencia.
-    6. Cualquier claim en ``BLOCKING_ELIGIBILITIES`` -> HALT_STAGE.
-    7. Cualquier claim con elegibilidad corregible pero SIN soporte de
-       corrección utilizable (``_has_usable_correction_support`` es
-       False) -> HALT_STAGE con ``AGENT07_CORRECTION_EVIDENCE_INSUFFICIENT``.
-       Fail-closed: no se solicita una corrección sin evidencia real.
-    8. Al menos un claim corregible CON soporte (y ninguno de 1-7) ->
-       RETURN a 06.
+    6. Al menos un claim corregible CON soporte de corrección utilizable
+       -> RETURN a 06, aunque en el MISMO lote existan también claims
+       bloqueantes (``BLOCKING_ELIGIBILITIES``) o corregibles sin
+       soporte -- un claim que 06 no puede arreglar YA NO veta, por sí
+       solo, a los que sí se pueden corregir con evidencia real
+       (decisión metodológica explícita, aprobada -- antes, CUALQUIER
+       claim bloqueante frenaba el lote completo). Esos claims
+       pendientes se devuelven en ``blocking_claim_uids`` -- nunca se
+       pierden ni se aprueban en silencio: quien consuma esta decisión
+       sigue viéndolos como pendientes de revisión manual, aunque el
+       lote avance parcialmente. Cuando en una ronda futura ya no quede
+       ningún claim corregible con soporte (porque 06 ya corrigió todos
+       los que podía), esta misma función cae al comportamiento
+       original: HALT_STAGE por lo que siga bloqueado.
+    7. Sin ningún claim corregible con soporte: cualquier claim en
+       ``BLOCKING_ELIGIBILITIES`` -> HALT_STAGE con
+       ``AGENT07_NON_CORRECTABLE_ISSUE``.
+    8. Sin ningún claim corregible con soporte NI bloqueante: cualquier
+       claim corregible pero SIN soporte de corrección utilizable
+       (``_has_usable_correction_support`` es False) -> HALT_STAGE con
+       ``AGENT07_CORRECTION_EVIDENCE_INSUFFICIENT``. Fail-closed: no se
+       solicita una corrección sin evidencia real.
     9. Todos los claims en ``NO_CORRECTION_NEEDED`` -> ADVANCE a 08.
 
     Devuelve ``{"action", "reason_code", "correctable_claim_uids",
@@ -364,6 +379,50 @@ def classify_verification_transition(
         for c in claims
         if c.get("final_correction_eligibility") in BLOCKING_ELIGIBILITIES
     )
+
+    correctable_candidates = [
+        c for c in claims if c.get("final_correction_eligibility") in CORRECTABLE_ELIGIBILITIES
+    ]
+    insufficient_evidence_ids = tuple(
+        _effective_correction_identity(c, contract_version)
+        for c in correctable_candidates if not _has_usable_correction_support(c)
+    )
+    correctable_claim_uids = tuple(
+        _effective_correction_identity(c, contract_version)
+        for c in correctable_candidates if _has_usable_correction_support(c)
+    )
+
+    # OPCION B (decisión metodológica aprobada explícitamente): un claim
+    # bloqueante o sin soporte de corrección utilizable YA NO veta, por
+    # sí solo, a los claims que SÍ se pueden corregir con evidencia real
+    # -- antes, un único claim bloqueante frenaba el lote completo,
+    # incluso si el resto era perfectamente corregible. Los claims
+    # pendientes (bloqueantes + sin soporte) se devuelven en
+    # blocking_claim_uids -- nunca se pierden ni se aprueban en
+    # silencio, siguen marcados como pendientes de revisión manual.
+    if correctable_claim_uids:
+        pending_manual_review = blocking_claim_uids + insufficient_evidence_ids
+        rationale = (
+            f"{len(correctable_claim_uids)} claim(s) corregibles con evidencia: "
+            f"{list(correctable_claim_uids)}."
+        )
+        if pending_manual_review:
+            rationale += (
+                f" Además, {len(pending_manual_review)} claim(s) quedan pendientes de "
+                "revisión manual y NO se corrigen en esta ronda (no bloquean la "
+                f"corrección parcial): {list(pending_manual_review)}."
+            )
+        return {
+            "action": "RETURN",
+            "reason_code": "AGENT07_CORRECTABLE_ISSUES",
+            "correctable_claim_uids": correctable_claim_uids,
+            "blocking_claim_uids": pending_manual_review,
+            "claim_identity_contract_version": contract_version,
+            "claim_identity_contract_version_newly_inferred": newly_inferred,
+            "claim_identity_contract_migrated": migrated,
+            "rationale": rationale,
+        }
+
     if blocking_claim_uids:
         return {
             "action": "HALT_STAGE",
@@ -379,13 +438,6 @@ def classify_verification_transition(
             ),
         }
 
-    correctable_candidates = [
-        c for c in claims if c.get("final_correction_eligibility") in CORRECTABLE_ELIGIBILITIES
-    ]
-    insufficient_evidence_ids = tuple(
-        _effective_correction_identity(c, contract_version)
-        for c in correctable_candidates if not _has_usable_correction_support(c)
-    )
     if insufficient_evidence_ids:
         return {
             "action": "HALT_STAGE",
@@ -400,21 +452,6 @@ def classify_verification_transition(
                 "pero no tienen evidencia ni propuesta correctiva utilizable: "
                 f"{list(insufficient_evidence_ids)}."
             ),
-        }
-
-    correctable_claim_uids = tuple(
-        _effective_correction_identity(c, contract_version) for c in correctable_candidates
-    )
-    if correctable_claim_uids:
-        return {
-            "action": "RETURN",
-            "reason_code": "AGENT07_CORRECTABLE_ISSUES",
-            "correctable_claim_uids": correctable_claim_uids,
-            "blocking_claim_uids": (),
-            "claim_identity_contract_version": contract_version,
-            "claim_identity_contract_version_newly_inferred": newly_inferred,
-            "claim_identity_contract_migrated": migrated,
-            "rationale": f"{len(correctable_claim_uids)} claim(s) corregibles con evidencia: {list(correctable_claim_uids)}.",
         }
 
     return {
