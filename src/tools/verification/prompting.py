@@ -175,7 +175,11 @@ def build_correction_messages(
         "localizada para un claim. Usa solo evidencia autorizada visible. No agregues hechos, citas, "
         "entidades, números, condiciones ni atribuciones no respaldadas. No reescribas la sección ni "
         "devuelvas un claim completo libre. Conserva el idioma. Devuelve solo JSON. "
-        "REQUEST_MANUAL_REVIEW y NO_CHANGE son decisiones, no action_type."
+        "REQUEST_MANUAL_REVIEW y NO_CHANGE son decisiones, no action_type. "
+        "llm_correction_recommendation es un booleano JSON (true/false), NUNCA el texto de "
+        "correction_decision -- son dos campos distintos con tipos distintos: correction_decision es "
+        "un string (PROPOSE_CHANGE/NO_CORRECTION/DEFER_TO_MANUAL_REVIEW/NOT_CORRECTABLE), "
+        "llm_correction_recommendation es exclusivamente true o false."
     )
     evidence = [{
         "evidence_id": x["evidence_id"], "source_filename": x["source_filename"],
@@ -195,7 +199,13 @@ def build_correction_messages(
         "response_fields": list(CORRECTION_RESPONSE_FIELDS),
         "correction_contract": {
             "claim_id_must_equal": context["claim_id"],
-            "recommendation_coherence": "PROPOSE_CHANGE=true; all other decisions=false",
+            "recommendation_coherence": (
+                "llm_correction_recommendation must be the JSON boolean true when "
+                "correction_decision=='PROPOSE_CHANGE', and the JSON boolean false for every other "
+                "correction_decision (NO_CORRECTION, DEFER_TO_MANUAL_REVIEW, NOT_CORRECTABLE). "
+                "Never set llm_correction_recommendation to a string -- it is not the same field as "
+                "correction_decision and must never contain its value."
+            ),
             "citation_span_rule": "REPLACE_CITATION requires citation_text_span linked to old_citation_refs by a contractual source/chunk marker",
             "narrow_scope_rule": "NARROW_SCOPE requires non-empty new_conditions supported by authorized evidence and cannot alter citations, attribution, or numeric values",
             "format_retry_semantics": "max_correction_format_repair_attempts counts extra calls after the first format-invalid response",
