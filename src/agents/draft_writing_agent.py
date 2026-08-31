@@ -142,6 +142,52 @@ class DraftWritingAgent:
             )
         return strategy
 
+    @staticmethod
+    def _revision_reuse_plan(
+        policy: Mapping[str, Any],
+    ) -> tuple[bool, set[str], dict[str, list[Any]], dict[str, dict[str, Any]]]:
+        """Determina qué secciones pueden reutilizarse tal cual en una
+        ronda de revisión pedida por 07, en vez de regenerarse con el
+        LLM.
+
+        Devuelve ``(is_revision_mode, affected_section_ids,
+        issues_by_section, previous_sections_by_id)``.
+
+        Solo activa el modo revisión si ``policy["mode"] == "REVISION"``
+        Y existen AMBOS artefactos reales (``writer_revision_request``,
+        ``previous_draft``) -- nunca infiere una ronda de revisión de
+        forma implícita. Una sección solo se considera reutilizable si
+        su ``section_id`` NO aparece entre los ``issues`` del
+        ``writer_revision_request`` (07 no la marcó como corregible) Y
+        SÍ existe una versión real de ella en ``previous_draft`` -- si
+        falta cualquiera de las dos condiciones, la sección se regenera
+        normalmente (nunca se reutiliza sin datos reales que lo
+        respalden)."""
+
+        revision_request = policy.get("writer_revision_request")
+        previous_draft = policy.get("previous_draft")
+        is_revision_mode = bool(
+            policy.get("mode") == "REVISION" and revision_request and previous_draft
+        )
+
+        affected_section_ids: set[str] = set()
+        issues_by_section: dict[str, list[Any]] = {}
+        previous_sections_by_id: dict[str, dict[str, Any]] = {}
+
+        if is_revision_mode:
+            for issue in revision_request.get("issues") or []:
+                issue_section_id = str(issue.get("section_id") or "").strip()
+                if not issue_section_id:
+                    continue
+                affected_section_ids.add(issue_section_id)
+                issues_by_section.setdefault(issue_section_id, []).append(issue)
+            for prev_section in previous_draft.get("sections") or []:
+                prev_sid = str(prev_section.get("section_id", "")).strip()
+                if prev_sid:
+                    previous_sections_by_id[prev_sid] = prev_section
+
+        return is_revision_mode, affected_section_ids, issues_by_section, previous_sections_by_id
+
     # Devuelve las versiones de recuperación, validación,
     # normalización y comportamiento general usadas por el agente 06.
     @staticmethod
@@ -395,6 +441,22 @@ class DraftWritingAgent:
             all_evidence: list[dict[str, Any]] = []
             attempt_logs: dict[str, list[dict[str, Any]]] = {}
 
+            # --- Reutilización dirigida en modo REVISION ---
+            # Si esta ejecución es una ronda de corrección pedida por 07,
+            # solo las secciones con al menos un claim marcado como
+            # corregible deben regenerarse con el LLM -- el resto ya fue
+            # aprobado por 07 en la ronda anterior y se reutiliza tal
+            # cual del borrador previo, sin gastar una llamada nueva al
+            # modelo. Si no es una ronda de revisión, el comportamiento
+            # es exactamente el de antes: todas las secciones se
+            # regeneran. Ver _revision_reuse_plan() para el detalle.
+            (
+                is_revision_mode,
+                affected_section_ids,
+                issues_by_section,
+                previous_sections_by_id,
+            ) = self._revision_reuse_plan(policy)
+
             # Recorre cada sección, busca la evidencia que le corresponde
             # y la guarda para usarla después al redactar.
             for section in sections:
@@ -434,6 +496,31 @@ class DraftWritingAgent:
                     generated.append(generated_section)
                     continue
 
+                # Reutiliza la sección tal cual si esta ronda de revisión
+                # no la marcó como afectada -- 07 ya la aprobó en la
+                # ronda anterior, así que no hace falta gastar una
+                # llamada al LLM en regenerarla de nuevo. Solo se activa
+                # si tenemos una versión previa REAL de esta sección
+                # específica (previous_sections_by_id) -- si por
+                # cualquier motivo no la tenemos (ej. el esquema cambió
+                # entre rondas), se sigue de largo y se regenera normal,
+                # nunca se inventa una reutilización sin datos reales.
+                if (
+                    is_revision_mode
+                    and sid not in affected_section_ids
+                    and sid in previous_sections_by_id
+                ):
+                    reused_section = previous_sections_by_id[sid]
+                    attempt_logs[sid] = [
+                        {
+                            "attempt": 0,
+                            "mode": "reused_unaffected_section_revision_cycle",
+                            "validation": reused_section.get("section_validation"),
+                        }
+                    ]
+                    generated.append(reused_section)
+                    continue
+
                 if contract == CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT:
                     from src.tools.draft_writing.canonical_sentences import (
                         generate_section_canonical_v2,
@@ -445,7 +532,7 @@ class DraftWritingAgent:
                         section=section,
                         evidence=evidence,
                         quant_context=quant_context,
-                        previous_errors=[],
+                        previous_errors=issues_by_section.get(sid, []),
                         policy=policy,
                         runtime=self.runtime,
                         raw_dir=raw_dir,
