@@ -1464,14 +1464,19 @@ def _terminal_nonempty(value: Any, field: str) -> str:
     return value.strip()
 
 
-def _terminal_string_seq(value: Any, field: str, *, allowed: set[str] | None = None) -> tuple[str, ...]:
+def _terminal_string_seq(
+    value: Any, field: str, *, allowed: set[str] | None = None,
+    allowed_prefixes: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     if type(value) not in (list, tuple):
         raise ValueError(f"TERMINAL_CONTRACT_INVALID:{field}")
     out = tuple(_terminal_nonempty(v, f"{field}[]") for v in value)
     if len(out) != len(set(out)):
         raise ValueError(f"TERMINAL_CONTRACT_INVALID:{field}:duplicates")
-    if allowed is not None and not set(out).issubset(allowed):
-        raise ValueError(f"TERMINAL_CONTRACT_UNKNOWN_CODE:{field}")
+    if allowed is not None:
+        unknown = [v for v in out if v not in allowed and not any(v.startswith(p) for p in allowed_prefixes)]
+        if unknown:
+            raise ValueError(f"TERMINAL_CONTRACT_UNKNOWN_CODE:{field}")
     return out
 
 
@@ -1662,7 +1667,23 @@ def validate_correction_proposal_contract(proposal: Mapping[str, Any]) -> dict[s
 
     v["evidence_ids"] = _terminal_string_seq(v["evidence_ids"], "evidence_ids")
     v["reason_codes"] = _terminal_string_seq(v["reason_codes"], "reason_codes", allowed=set(CORRECTION_REASON_CODES))
-    v["validation_issue_codes"] = _terminal_string_seq(v["validation_issue_codes"], "validation_issue_codes", allowed=set(CORRECTION_VALIDATION_ISSUE_CODES))
+    v["validation_issue_codes"] = _terminal_string_seq(
+        v["validation_issue_codes"], "validation_issue_codes",
+        allowed=set(CORRECTION_VALIDATION_ISSUE_CODES),
+        # Prefijos dinámicos que validate_correction_response/parse_correction_response
+        # (src/tools/verification/corrections.py, prompting.py) producen realmente al
+        # agotar reintentos -- confirmado leyendo cada raise ValueError de ambas
+        # funciones, no inventado. CORRECTION_FIELD_INVALID:<campo> es enumerable
+        # (campo viene de CORRECTION_RESPONSE_FIELDS) pero CORRECTION_RESPONSE_INVALID_JSON:
+        # <msg del parser JSON> y los dos de campos desconocidos/faltantes nunca lo son,
+        # porque el sufijo es texto libre o una lista combinatoria de nombres de campo.
+        allowed_prefixes=(
+            "CORRECTION_FIELD_INVALID:",
+            "CORRECTION_RESPONSE_UNKNOWN_FIELDS:",
+            "CORRECTION_RESPONSE_MISSING_FIELDS:",
+            "CORRECTION_RESPONSE_INVALID_JSON:",
+        ),
+    )
     rm = v["retry_metrics"]
     if not isinstance(rm, Mapping) or type(rm.get("llm_calls")) is not int or rm["llm_calls"] < 0:
         raise ValueError("CORRECTION_PROPOSAL_RETRY_METRICS_INVALID")

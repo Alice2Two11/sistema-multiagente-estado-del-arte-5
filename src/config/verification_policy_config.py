@@ -566,6 +566,19 @@ CORRECTION_VALIDATION_ISSUE_CODES = (
     "PRIOR_CORRECTION_SECTION_MISMATCH", "CORRECTION_PROPOSAL_LIMIT_REACHED",
     "NARROW_SCOPE_CONDITIONS_REQUIRED", "CITATION_TEXT_REFERENCE_MISMATCH",
     "AUTHORIZED_CORRECTION_EVIDENCE_UNAVAILABLE", "CORRECTION_LLM_UNAVAILABLE",
+    # Códigos estáticos de validate_correction_response/parse_correction_response
+    # (src/tools/verification/corrections.py, src/tools/verification/prompting.py)
+    # que faltaban aquí -- confirmados leyendo cada raise ValueError de ambas
+    # funciones, no inventados. Los códigos con sufijo dinámico (nombre de campo
+    # libre, mensaje del parser JSON) se cubren aparte vía allowed_prefixes en
+    # el único call site que valida validation_issue_codes (ver validation.py).
+    "CORRECTION_RESPONSE_NOT_OBJECT", "CORRECTION_RESPONSE_EMPTY",
+    "CORRECTION_RESPONSE_NOT_PURE_JSON_OBJECT", "CORRECTION_RESPONSE_ROOT_NOT_OBJECT",
+    "CORRECTION_DECISION_UNKNOWN", "CORRECTION_ACTION_UNKNOWN",
+    "CORRECTION_ACTION_NOT_ALLOWED_FOR_DECISION", "CORRECTION_CHANGE_SCOPE_UNKNOWN",
+    "CORRECTION_SEMANTIC_LEVEL_UNKNOWN", "CORRECTION_REASON_CODE_UNKNOWN",
+    "ATTRIBUTION_RELATION_NOT_APPLICABLE", "AUTOMATIC_PROPOSAL_REQUIRES_MINIMAL_CHANGE",
+    "SPAN_COORDINATE_SYSTEM_INVALID",
 )
 DEFAULT_VERIFICATION_INPUT_POLICY.update({
     "correction_system_prompt_version": "AGENT07_CORRECTION_SYSTEM_V1",
