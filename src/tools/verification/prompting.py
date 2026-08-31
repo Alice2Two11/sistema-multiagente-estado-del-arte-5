@@ -211,6 +211,18 @@ def build_correction_messages(
         "old_numeric_pairs y new_numeric_pairs son listas de PARES [valor_antiguo, "
         "valor_nuevo], cada par una lista de EXACTAMENTE 2 strings -- nunca un objeto "
         "{\"old_value\":...} ni una lista de un solo elemento. "
+        "citation_text_span sigue la MISMA regla que action_type (JSON null, nunca \"\" "
+        "string vacío) y por la MISMA razón que metric_context/unit_context usan \"\" -- son "
+        "reglas opuestas para dos campos distintos, no la confundas: cuando action_type NO es "
+        "REPLACE_CITATION (incluyendo cuando correction_decision no es PROPOSE_CHANGE), "
+        "citation_text_span debe ser el valor JSON null -- NUNCA \"\" ni ningún string. Solo "
+        "cuando action_type=='REPLACE_CITATION', citation_text_span es un OBJETO (nunca un "
+        "string, ni siquiera el texto de la cita) con las mismas claves que claim_span_in_"
+        "section: {\"coordinate_base\": \"CLAIM_TEXT\", \"coordinate_system\": "
+        "\"PYTHON_CODEPOINT_OFFSETS\", \"start\": <int>, \"end\": <int>, \"text\": <string>}, "
+        "donde \"text\" es un fragmento copiado EXACTO (carácter por carácter) del claim "
+        "original que contenga o esté junto al marcador de la cita referenciada en "
+        "old_citation_refs. \"\" no es válido para citation_text_span en ningún caso. "
         "change_scope tiene un valor válido adicional según el caso: cuando "
         "correction_decision NO es PROPOSE_CHANGE, change_scope debe ser exactamente \"NONE\" "
         "(igual que semantic_change_level); cuando correction_decision SÍ es PROPOSE_CHANGE, "
@@ -247,6 +259,13 @@ def build_correction_messages(
                 "correction_decision and must never contain its value."
             ),
             "citation_span_rule": "REPLACE_CITATION requires citation_text_span linked to old_citation_refs by a contractual source/chunk marker",
+            "citation_text_span_null_rule": (
+                "citation_text_span must be the JSON value null whenever action_type != "
+                "'REPLACE_CITATION' -- never \"\" (empty string). Same rule as action_type, "
+                "opposite of metric_context/unit_context. When action_type == "
+                "'REPLACE_CITATION', it must be an object {coordinate_base, coordinate_system, "
+                "start, end, text} -- never a bare string, not even the citation text itself."
+            ),
             "narrow_scope_rule": "NARROW_SCOPE requires non-empty new_conditions supported by authorized evidence and cannot alter citations, attribution, or numeric values",
             "format_retry_semantics": "max_correction_format_repair_attempts counts extra calls after the first format-invalid response",
             "reason_codes_rule": (

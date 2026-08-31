@@ -560,7 +560,29 @@ def propose_correction(context: Mapping[str,Any], *, llm: CorrectionLLM | None) 
         return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,"DEFER_TO_MANUAL_REVIEW","DEFERRED",decision_path,policy,issues=("AUTHORIZED_CORRECTION_EVIDENCE_UNAVAILABLE",),claim_span_in_section=claim_span_in_section)
     if llm is None:
         return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,"DEFER_TO_MANUAL_REVIEW","DEFERRED",decision_path,policy,issues=("CORRECTION_LLM_UNAVAILABLE",),claim_span_in_section=claim_span_in_section)
-    from src.tools.verification.prompting import build_correction_messages, parse_correction_response
+    from src.tools.verification.prompting import (
+        build_correction_messages, parse_correction_response,
+        normalize_verification_llm_response,
+    )
+
+    def _raw_llm_text(value: Any) -> str:
+        """Normaliza la respuesta cruda del LLM a texto ANTES de persistirla en
+        raw_attempts -- nunca el objeto AIMessage/BaseMessage de LangChain que
+        llm.invoke() devuelve, que no es serializable a JSON y revienta la
+        agregación (AGGREGATION_COLLECTION_ELEMENT_INVALID:NON_JSON_VALUE:
+        AIMessage). Reutiliza normalize_verification_llm_response -- la misma
+        normalización que ya usa parse_correction_response -- para que el
+        texto capturado en raw_attempts sea exactamente el mismo que se
+        valida, nunca la representación completa del objeto con metadata de
+        LangChain. Fallback final a str() solo por si acaso, para garantizar
+        JSON-serializable siempre, sin excepción."""
+        normalized = normalize_verification_llm_response(value)
+        if isinstance(normalized, Mapping):
+            return json.dumps(normalized, ensure_ascii=False)
+        if isinstance(normalized, str) and normalized:
+            return normalized
+        return str(value)
+
     raw_attempts=[]; previous_errors=[]; parsed=None
     metrics={"llm_calls":0,"format_attempts":0,"format_retries":0,"schema_validation_attempts":0,"schema_retries":0,"total_response_retries":0}
     for attempt in range(1,policy["max_correction_llm_attempts"]+1):
@@ -576,17 +598,17 @@ def propose_correction(context: Mapping[str,Any], *, llm: CorrectionLLM | None) 
             decoded=parse_correction_response(raw)
         except ValueError as exc:
             metrics["format_retries"]+=1; metrics["total_response_retries"]+=1
-            previous_errors=[str(exc)]; raw_attempts.append({"attempt_number":attempt,"raw_text":raw,"parse_status":"FORMAT_INVALID","validation_errors":tuple(previous_errors)})
+            previous_errors=[str(exc)]; raw_attempts.append({"attempt_number":attempt,"raw_text":_raw_llm_text(raw),"parse_status":"FORMAT_INVALID","validation_errors":tuple(previous_errors)})
             if metrics["format_retries"] >= policy["max_correction_format_repair_attempts"] + 1: break
             continue
         metrics["schema_validation_attempts"]+=1
         try:
             parsed=validate_correction_response(decoded,allowed_evidence_ids=[x["evidence_id"] for x in eligible], expected_claim_id=claim_id)
-            raw_attempts.append({"attempt_number":attempt,"raw_text":raw,"parse_status":"VALID","validation_errors":()})
+            raw_attempts.append({"attempt_number":attempt,"raw_text":_raw_llm_text(raw),"parse_status":"VALID","validation_errors":()})
             break
         except ValueError as exc:
             metrics["schema_retries"]+=1; metrics["total_response_retries"]+=1
-            previous_errors=[str(exc)]; raw_attempts.append({"attempt_number":attempt,"raw_text":raw,"parse_status":"SCHEMA_INVALID","validation_errors":tuple(previous_errors)})
+            previous_errors=[str(exc)]; raw_attempts.append({"attempt_number":attempt,"raw_text":_raw_llm_text(raw),"parse_status":"SCHEMA_INVALID","validation_errors":tuple(previous_errors)})
     if parsed is None:
         # Fallo real de validación (formato/esquema agotó sus reintentos) --
         # SÍ es un fallo técnico: validation_issue_codes se llena con los
