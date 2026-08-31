@@ -11,6 +11,9 @@ from typing import Any, Mapping, Sequence
 from src.config.verification_policy_config import (
     ATTRIBUTION_ASSESSMENTS,
     CONTRADICTION_TYPES,
+    CORRECTION_CHANGE_SCOPES,
+    CORRECTION_REASON_CODES,
+    CORRECTION_SEMANTIC_CHANGE_LEVELS,
     EXTRAPOLATION_ASSESSMENTS,
     NUMERIC_ASSESSMENTS,
     SCIENTIFIC_VERDICTS,
@@ -179,7 +182,12 @@ def build_correction_messages(
         "llm_correction_recommendation es un booleano JSON (true/false), NUNCA el texto de "
         "correction_decision -- son dos campos distintos con tipos distintos: correction_decision es "
         "un string (PROPOSE_CHANGE/NO_CORRECTION/DEFER_TO_MANUAL_REVIEW/NOT_CORRECTABLE), "
-        "llm_correction_recommendation es exclusivamente true o false."
+        "llm_correction_recommendation es exclusivamente true o false. "
+        "change_scope y semantic_change_level deben ser EXACTAMENTE uno de los valores listados en "
+        "allowed_change_scopes/allowed_semantic_change_levels del payload (todo en mayúsculas, ej. "
+        "TOKEN/PHRASE/CLAUSE/SENTENCE/MULTI_SENTENCE y NONE/MINIMAL/MODERATE/SUBSTANTIAL) -- nunca una "
+        "palabra libre como 'local' o 'minor'. reason_codes debe ser un subconjunto de "
+        "allowed_reason_codes, nunca un código inventado."
     )
     evidence = [{
         "evidence_id": x["evidence_id"], "source_filename": x["source_filename"],
@@ -195,6 +203,9 @@ def build_correction_messages(
         "eligible_evidence": evidence,
         "allowed_correction_decisions": ["NO_CORRECTION", "PROPOSE_CHANGE", "DEFER_TO_MANUAL_REVIEW", "NOT_CORRECTABLE"],
         "allowed_action_types": ["REMOVE_UNSUPPORTED_FRAGMENT", "REPLACE_NUMERIC_VALUE", "CORRECT_ATTRIBUTION", "NARROW_SCOPE", "ADD_QUALIFICATION", "REPLACE_CITATION", "SPLIT_CLAIM"],
+        "allowed_change_scopes": list(CORRECTION_CHANGE_SCOPES),
+        "allowed_semantic_change_levels": list(CORRECTION_SEMANTIC_CHANGE_LEVELS),
+        "allowed_reason_codes": list(CORRECTION_REASON_CODES),
         "previous_errors": list(previous_errors),
         "response_fields": list(CORRECTION_RESPONSE_FIELDS),
         "correction_contract": {
