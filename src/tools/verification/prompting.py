@@ -53,7 +53,17 @@ def build_verification_messages(
         "No uses conocimiento externo ni inventes fuentes, autores, métricas o valores. "
         "La falta de evidencia no equivale a falsedad. Distingue desacuerdo entre papers "
         "de conflicto claim-evidence. Usa solo evidence_id entregados. No reescribas el claim. "
-        "Devuelve únicamente un objeto JSON sin Markdown y conserva el idioma del claim en rationale."
+        "Devuelve únicamente un objeto JSON sin Markdown y conserva el idioma del claim en rationale. "
+        "Criterio explícito para llm_correction_recommendation (no lo dejes en False por defecto sin "
+        "evaluarlo): marcá true cuando el veredicto sea PARTIALLY_SUPPORTED o CONTRADICTED y el ajuste "
+        "necesario sea LOCALIZADO -- es decir, se pueda resolver acotando, matizando o corrigiendo una "
+        "parte puntual del claim con la evidencia ya visible, sin introducir información nueva ni "
+        "reescribir la afirmación completa. Marcá manual_review_required=true (no "
+        "llm_correction_recommendation) solo cuando el problema NO sea localizado -- por ejemplo, la "
+        "evidencia disponible contradice el claim de forma sustancial, hay múltiples fuentes en desacuerdo "
+        "real entre sí sobre el mismo punto, o el ajuste necesario cambiaría el sentido central de la "
+        "afirmación. Ambos campos son independientes: podés marcar llm_correction_recommendation=true y "
+        "manual_review_required=false en el mismo claim si el problema es puntual y corregible."
     )
     evidence_payload = []
     for row in eligible_evidence:
