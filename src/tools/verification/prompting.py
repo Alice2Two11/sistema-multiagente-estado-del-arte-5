@@ -190,7 +190,21 @@ def build_correction_messages(
         "allowed_reason_codes -- nunca el nombre de un action_type (ej. NARROW_SCOPE es un "
         "action_type, no un reason_code válido; no lo repitas dentro de reason_codes) ni un código "
         "inventado. metric_context y unit_context son SIEMPRE string JSON, nunca null: usa \"\" "
-        "(string vacío) cuando no aplica, no el valor null."
+        "(string vacío) cuando no aplica, no el valor null. "
+        "action_type sigue la regla CONTRARIA a metric_context/unit_context: cuando "
+        "correction_decision NO es PROPOSE_CHANGE (es decir, es NO_CORRECTION, "
+        "DEFER_TO_MANUAL_REVIEW o NOT_CORRECTABLE), action_type debe ser el valor JSON null "
+        "-- NUNCA \"\" (string vacío) y nunca el nombre de una acción. Solo cuando "
+        "correction_decision=='PROPOSE_CHANGE' action_type es un string, y debe ser "
+        "exactamente uno de allowed_action_types. \"\" no es un valor válido para action_type "
+        "en ningún caso. "
+        "old_citation_refs y new_citation_refs son listas de OBJETOS, nunca de strings ni de "
+        "evidence_id sueltos: cada elemento debe ser {\"source_filename\": <string>, "
+        "\"chunk_id\": <string>}, copiados exactamente de source_filename/chunk_id en "
+        "eligible_evidence -- nunca [\"E03\"] ni el evidence_id como texto. "
+        "old_numeric_pairs y new_numeric_pairs son listas de PARES [valor_antiguo, "
+        "valor_nuevo], cada par una lista de EXACTAMENTE 2 strings -- nunca un objeto "
+        "{\"old_value\":...} ni una lista de un solo elemento."
     )
     evidence = [{
         "evidence_id": x["evidence_id"], "source_filename": x["source_filename"],
@@ -230,6 +244,21 @@ def build_correction_messages(
             "metric_unit_context_rule": (
                 "metric_context and unit_context are always a JSON string, never null -- use \"\" "
                 "(empty string) when there is no metric/unit context, not the JSON value null."
+            ),
+            "action_type_rule": (
+                "action_type is the OPPOSITE of metric_context/unit_context: it must be the JSON "
+                "value null whenever correction_decision != 'PROPOSE_CHANGE', and must be a "
+                "non-empty string from allowed_action_types when correction_decision == "
+                "'PROPOSE_CHANGE'. \"\" (empty string) is never valid for action_type."
+            ),
+            "citation_refs_shape_rule": (
+                "old_citation_refs and new_citation_refs are lists of objects "
+                "{\"source_filename\": str, \"chunk_id\": str} copied from eligible_evidence -- "
+                "never a bare evidence_id string like \"E03\"."
+            ),
+            "numeric_pairs_shape_rule": (
+                "old_numeric_pairs and new_numeric_pairs are lists of 2-element string pairs "
+                "[old_value, new_value] -- never an object with keys like old_value/new_value."
             ),
         },
     }
