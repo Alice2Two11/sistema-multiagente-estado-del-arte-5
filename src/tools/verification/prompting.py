@@ -186,8 +186,11 @@ def build_correction_messages(
         "change_scope y semantic_change_level deben ser EXACTAMENTE uno de los valores listados en "
         "allowed_change_scopes/allowed_semantic_change_levels del payload (todo en mayúsculas, ej. "
         "TOKEN/PHRASE/CLAUSE/SENTENCE/MULTI_SENTENCE y NONE/MINIMAL/MODERATE/SUBSTANTIAL) -- nunca una "
-        "palabra libre como 'local' o 'minor'. reason_codes debe ser un subconjunto de "
-        "allowed_reason_codes, nunca un código inventado."
+        "palabra libre como 'local' o 'minor'. reason_codes debe ser un subconjunto EXACTO de "
+        "allowed_reason_codes -- nunca el nombre de un action_type (ej. NARROW_SCOPE es un "
+        "action_type, no un reason_code válido; no lo repitas dentro de reason_codes) ni un código "
+        "inventado. metric_context y unit_context son SIEMPRE string JSON, nunca null: usa \"\" "
+        "(string vacío) cuando no aplica, no el valor null."
     )
     evidence = [{
         "evidence_id": x["evidence_id"], "source_filename": x["source_filename"],
@@ -220,6 +223,14 @@ def build_correction_messages(
             "citation_span_rule": "REPLACE_CITATION requires citation_text_span linked to old_citation_refs by a contractual source/chunk marker",
             "narrow_scope_rule": "NARROW_SCOPE requires non-empty new_conditions supported by authorized evidence and cannot alter citations, attribution, or numeric values",
             "format_retry_semantics": "max_correction_format_repair_attempts counts extra calls after the first format-invalid response",
+            "reason_codes_rule": (
+                "reason_codes must be a subset of allowed_reason_codes exactly as listed -- action_type "
+                "values (e.g. NARROW_SCOPE, ADD_QUALIFICATION) are never valid reason_codes."
+            ),
+            "metric_unit_context_rule": (
+                "metric_context and unit_context are always a JSON string, never null -- use \"\" "
+                "(empty string) when there is no metric/unit context, not the JSON value null."
+            ),
         },
     }
     return {"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)}
