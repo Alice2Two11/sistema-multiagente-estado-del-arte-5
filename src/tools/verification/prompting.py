@@ -213,10 +213,24 @@ def build_correction_messages(
     }
     return {"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)}
 
-def parse_correction_response(raw_text: str) -> dict[str, Any]:
-    if not isinstance(raw_text, str) or not raw_text.strip():
+def parse_correction_response(raw_text: Any) -> dict[str, Any]:
+    """Desenvuelve la respuesta cruda del LLM antes de exigirle forma JSON
+    pura -- igual que ``parse_verification_response`` ya hacía. Antes de
+    este arreglo, ``raw_text`` recibía el objeto ``AIMessage`` de LangChain
+    sin desenvolver (nunca un ``str``), así que
+    ``isinstance(raw_text, str)`` siempre daba ``False`` y el chequeo
+    ``CORRECTION_RESPONSE_EMPTY`` se disparaba en TODOS los intentos, sin
+    importar qué tan bien formado viniera el JSON real dentro de
+    ``.content`` -- confirmado con datos crudos reales de
+    experimento_paper_13 (bug preexistente, expuesto recién ahora porque
+    antes casi nunca se llegaba a ejercitar este paso)."""
+
+    normalized = normalize_verification_llm_response(raw_text)
+    if isinstance(normalized, Mapping):
+        return dict(normalized)
+    if not normalized.strip():
         raise ValueError("CORRECTION_RESPONSE_EMPTY")
-    text = raw_text.strip()
+    text = normalized.strip()
     if not (text.startswith("{") and text.endswith("}")):
         raise ValueError("CORRECTION_RESPONSE_NOT_PURE_JSON_OBJECT")
     try:
