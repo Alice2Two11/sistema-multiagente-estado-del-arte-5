@@ -290,6 +290,21 @@ def compute_claim_factual_metrics(active_claims: list[dict[str, Any]]) -> dict[s
     hallucinated_claim_count = int(
         sum(1 for row in active_claims if row["verdict"] == "contradicted")
     )
+    # Definición amplia (equivalente a "unsupported" en el sentido que se
+    # discutió para la tesis: cualquier claim que terminó SIN respaldo
+    # confirmado, ya sea porque la evidencia lo contradice (contradicted) o
+    # porque no se encontró/confirmó evidencia suficiente para respaldarlo
+    # (insufficient_evidence, not_verifiable). No incluye not_evaluated
+    # (el sistema nunca llegó a intentar evaluarlo -- un vacío de
+    # procedimiento, no un juicio sobre el contenido) ni
+    # partially_supported (tiene respaldo real, aunque incompleto).
+    hallucinated_claim_count_broad = int(
+        sum(
+            1
+            for row in active_claims
+            if row["verdict"] in {"contradicted", "insufficient_evidence", "not_verifiable"}
+        )
+    )
     # Complemento honesto de hallucination_rate: claims cuyo soporte real
     # es incierto (nunca se evaluaron, evidencia insuficiente, o no
     # verificables) -- ninguno de estos cuenta como alucinación confirmada
@@ -306,6 +321,7 @@ def compute_claim_factual_metrics(active_claims: list[dict[str, Any]]) -> dict[s
 
     factual_precision = supported_claims / total_active_claims
     hallucination_rate = hallucinated_claim_count / total_active_claims
+    hallucination_rate_broad = hallucinated_claim_count_broad / total_active_claims
     unverified_rate = unverified_claim_count / total_active_claims
     evidence_coverage = float(
         sum(1 for row in active_claims if to_bool(row["evidence_present"])) / total_active_claims
@@ -324,6 +340,7 @@ def compute_claim_factual_metrics(active_claims: list[dict[str, Any]]) -> dict[s
         "problem_claims": problem_claim_count,
         "factual_precision": factual_precision,
         "hallucination_rate": hallucination_rate,
+        "hallucination_rate_broad": hallucination_rate_broad,
         "unverified_rate": unverified_rate,
         "evidence_coverage": evidence_coverage,
         "traceability_text_coverage": traceability_text_coverage,
@@ -383,6 +400,7 @@ def build_factual_metric_rows(
     supported_claims: int,
     factual_precision: float,
     hallucination_rate: float,
+    hallucination_rate_broad: float,
     unverified_rate: float,
     evidence_coverage: float,
     traceability_text_coverage: float,
@@ -416,11 +434,23 @@ def build_factual_metric_rows(
             "metric": "hallucination_rate",
             "value": hallucination_rate,
             "description": (
-                "Proporción de claims activos con veredicto contradicted "
-                "(la evidencia autorizada contradice activamente el claim). "
-                "Los claims parcialmente soportados, no evaluados, con "
-                "evidencia insuficiente o no verificables NO cuentan aquí "
-                "-- ver unverified_rate para esos casos."
+                "Definición estricta: proporción de claims activos con "
+                "veredicto contradicted (la evidencia autorizada contradice "
+                "activamente el claim). No incluye claims sin evidencia "
+                "suficiente ni no verificables -- ver hallucination_rate_broad."
+            ),
+        },
+        {
+            "metric": "hallucination_rate_broad",
+            "value": hallucination_rate_broad,
+            "description": (
+                "Definición amplia: proporción de claims activos con "
+                "veredicto contradicted, insufficient_evidence o "
+                "not_verifiable -- cualquier claim que terminó sin respaldo "
+                "confirmado, ya sea por contradicción activa o por falta de "
+                "evidencia suficiente para respaldarlo. No incluye "
+                "not_evaluated (nunca se intentó evaluar) ni "
+                "partially_supported (tiene respaldo real, aunque parcial)."
             ),
         },
         {
