@@ -277,16 +277,36 @@ def compute_claim_factual_metrics(active_claims: list[dict[str, Any]]) -> dict[s
         )
     )
 
-    # Tasa de alucinación estricta. En el contrato actual del Agente 07 no
-    # existe el veredicto ``contradicted``; por ello solo ``unsupported`` se
-    # contabiliza como alucinación operacional. Los casos
-    # ``partially_supported`` y ``unclear`` no se cuentan como alucinación.
+    # Tasa de alucinación estricta. El veredicto que representa una
+    # alucinación operacional confirmada en el contrato real de Agente 07
+    # (ver SCIENTIFIC_VERDICTS en verification_policy_config.py) es
+    # "contradicted" -- la evidencia autorizada contradice activamente el
+    # claim. "unsupported" NO es un veredicto válido del sistema (nunca
+    # puede aparecer), así que contarlo siempre daba 0 sin importar el
+    # contenido real -- no medía nada. partially_supported/not_evaluated/
+    # insufficient_evidence/not_verifiable no se cuentan aquí porque no son
+    # alucinaciones confirmadas, son evidencia parcial o incertidumbre (ver
+    # unverified_rate más abajo para no perder esa señal).
     hallucinated_claim_count = int(
-        sum(1 for row in active_claims if row["verdict"] == "unsupported")
+        sum(1 for row in active_claims if row["verdict"] == "contradicted")
+    )
+    # Complemento honesto de hallucination_rate: claims cuyo soporte real
+    # es incierto (nunca se evaluaron, evidencia insuficiente, o no
+    # verificables) -- ninguno de estos cuenta como alucinación confirmada
+    # arriba, pero tampoco son "seguros". Sin esto, un hallucination_rate
+    # bajo puede leerse como "el documento es confiable" cuando en realidad
+    # una fracción grande de claims simplemente nunca se llegó a verificar.
+    unverified_claim_count = int(
+        sum(
+            1
+            for row in active_claims
+            if row["verdict"] in {"not_evaluated", "insufficient_evidence", "not_verifiable"}
+        )
     )
 
     factual_precision = supported_claims / total_active_claims
     hallucination_rate = hallucinated_claim_count / total_active_claims
+    unverified_rate = unverified_claim_count / total_active_claims
     evidence_coverage = float(
         sum(1 for row in active_claims if to_bool(row["evidence_present"])) / total_active_claims
     )
@@ -304,6 +324,7 @@ def compute_claim_factual_metrics(active_claims: list[dict[str, Any]]) -> dict[s
         "problem_claims": problem_claim_count,
         "factual_precision": factual_precision,
         "hallucination_rate": hallucination_rate,
+        "unverified_rate": unverified_rate,
         "evidence_coverage": evidence_coverage,
         "traceability_text_coverage": traceability_text_coverage,
         "invalid_traceability_pairs": invalid_traceability_pairs,
@@ -362,6 +383,7 @@ def build_factual_metric_rows(
     supported_claims: int,
     factual_precision: float,
     hallucination_rate: float,
+    unverified_rate: float,
     evidence_coverage: float,
     traceability_text_coverage: float,
     citation_error_rate: float | None,
@@ -394,9 +416,24 @@ def build_factual_metric_rows(
             "metric": "hallucination_rate",
             "value": hallucination_rate,
             "description": (
-                "Proporción de claims activos con veredicto unsupported. "
-                "Los claims parcialmente soportados o ambiguos no se "
-                "consideran automáticamente alucinaciones."
+                "Proporción de claims activos con veredicto contradicted "
+                "(la evidencia autorizada contradice activamente el claim). "
+                "Los claims parcialmente soportados, no evaluados, con "
+                "evidencia insuficiente o no verificables NO cuentan aquí "
+                "-- ver unverified_rate para esos casos."
+            ),
+        },
+        {
+            "metric": "unverified_rate",
+            "value": unverified_rate,
+            "description": (
+                "Proporción de claims activos cuyo soporte real es "
+                "incierto (veredicto not_evaluated, insufficient_evidence "
+                "o not_verifiable). No son alucinaciones confirmadas, pero "
+                "tampoco están validados -- un hallucination_rate bajo "
+                "junto a un unverified_rate alto significa que gran parte "
+                "del documento simplemente nunca se llegó a verificar, no "
+                "que sea confiable."
             ),
         },
         {

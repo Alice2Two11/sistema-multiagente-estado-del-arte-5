@@ -75,6 +75,7 @@ def build_factual_audit(
         supported_claims=claim_metrics["supported_claims"],
         factual_precision=claim_metrics["factual_precision"],
         hallucination_rate=claim_metrics["hallucination_rate"],
+        unverified_rate=claim_metrics["unverified_rate"],
         evidence_coverage=claim_metrics["evidence_coverage"],
         traceability_text_coverage=claim_metrics["traceability_text_coverage"],
         citation_error_rate=citation_metrics["citation_error_rate"],
