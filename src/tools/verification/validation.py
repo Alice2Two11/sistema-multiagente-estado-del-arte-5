@@ -1082,12 +1082,23 @@ def _comparison_failure_result(*, reverification_input: Mapping[str, Any], prech
         "diagnostic": dict(details or {}),
         "precheck_reason_codes": tuple(str(x) for x in precheck_reason_codes),
         "precheck_technical_issue_codes": tuple(str(x) for x in precheck_technical_issue_codes),
-        "gate_classification": str((details or {}).get("gate_classification") or (
+    }
+    # gate_classification es GATE-ONLY (validate_correction_traceability_row_
+    # contract, ~línea 2006-2009: debe ser None cuando is_gate_result es
+    # False, y is_gate_result -- vía _phase655_stage_action -- solo es True
+    # cuando correction_action_type=="NOT_AVAILABLE"). Antes se ponía
+    # incondicionalmente en trace_item, así que una corrección con acción
+    # científica real (REMOVE_UNSUPPORTED_FRAGMENT, etc.) que cae en este
+    # resultado terminal (precheck no pasó / reverificación no completó)
+    # heredaba gate_classification igual, violando el contrato de la fila
+    # de trazabilidad más abajo. Se agrega solo cuando de verdad es el caso
+    # de gate (sin acción disponible).
+    if safe_action == COMPARISON_GATE_ACTION_NOT_AVAILABLE:
+        trace_item["gate_classification"] = str((details or {}).get("gate_classification") or (
             "TEMPORARY_TECHNICAL"
             if decision == "DEFER_TO_MANUAL_REVIEW"
             else "PERMANENT_CONTRACTUAL"
-        )),
-    }
+        ))
     result = CorrectionBeforeAfterComparisonResult(
         correction_id=ident("correction_id"), claim_id=ident("claim_id"), section_id=ident("section_id"),
         correction_action_type=safe_action,
