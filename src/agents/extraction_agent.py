@@ -133,6 +133,7 @@ from src.tools.extraction.corpus_eligibility import (
     QUARANTINE_AUDIT_COLUMNS,
     apply_corpus_eligibility_policy,
     apply_pre_eligibility_policy,
+    auto_quarantine_missing_critical_fields,
     is_corpus_include,
     is_corpus_quarantined,
 )
@@ -1380,12 +1381,36 @@ class ExtractionAgent:
 
             # Construye y guarda los reportes finales de resumen y calidad
             # usando las fichas definitivas después de todas las correcciones y filtros.
-            summary_rows = [
-                build_summary_row(card) for card in cards
-            ]
             quality_rows = [
                 self._quality_row(card) for card in cards
             ]
+
+            # Cuarentena automática de última instancia: SOLO en el intento
+            # final (nunca en el primero, para no cortarle al modelo su
+            # oportunidad natural de repair). Si después del repair sigue
+            # habiendo fichas con campos críticos faltantes, se ponen en
+            # QUARANTINE (quedan fuera de la cobertura, quedan auditadas en
+            # quarantine_audit_rows) en vez de bloquear la etapa entera con
+            # HALT_STAGE/APPROVED_PENDING_MANUAL_REVIEW por uno o dos papers
+            # puntuales. Ver corpus_eligibility.py,
+            # auto_quarantine_missing_critical_fields().
+            if not agent_input.is_first_attempt():
+                auto_quarantine_result = auto_quarantine_missing_critical_fields(
+                    cards, quality_rows,
+                    created_at=self.dependencies.now_factory(),
+                )
+                cards = auto_quarantine_result["cards"]
+                quarantine_audit_rows.extend(
+                    auto_quarantine_result["quarantine_audit_rows"]
+                )
+                quality_rows = [
+                    self._quality_row(card) for card in cards
+                ]
+
+            summary_rows = [
+                build_summary_row(card) for card in cards
+            ]
+            self.dependencies.save_jsonl(cards, paths["CARDS_JSONL_PATH"])
             self.dependencies.save_dataframe(
                 pd.DataFrame(summary_rows, columns=SUMMARY_COLUMNS),
                 paths["CARDS_SUMMARY_CSV_PATH"],
@@ -1859,7 +1884,13 @@ class ExtractionAgent:
         missing = missing_critical_fields(card)
         row["missing_fields"] = missing
         row["num_missing_fields"] = len(missing)
-        row["_excluded_by_policy_rule"] = is_review_excluded(card)
+        # Antes solo miraba exclusión por reviews -- una ficha ya en
+        # QUARANTINE (FASE 1 o FASE 2) seguía contando en la cobertura y
+        # podía arrastrar el promedio hacia abajo por un problema que el
+        # propio sistema ya decidió aislar. is_corpus_quarantined() cubre
+        # también la cuarentena nueva de auto_quarantine_missing_critical_
+        # fields (mismo campo corpus_eligibility).
+        row["_excluded_by_policy_rule"] = is_review_excluded(card) or is_corpus_quarantined(card)
         return row
 
     # Calcula qué tan completas quedaron las fichas incluidas,

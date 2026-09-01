@@ -139,6 +139,61 @@ def classify_pre_eligibility(card: Mapping[str, Any]) -> dict[str, Any]:
     return {"state": CANDIDATE, "reason": "Sin señal de exclusión/cuarentena documental -- candidata a clasificación de relevancia."}
 
 
+def auto_quarantine_missing_critical_fields(
+    cards: Sequence[Mapping[str, Any]],
+    quality_rows: Sequence[Mapping[str, Any]],
+    *,
+    created_at: str,
+) -> dict[str, Any]:
+    """Cuarentena automática de última instancia -- NO es FASE 1 ni FASE 2,
+    es un mecanismo aparte pensado para invocarse solo en el intento final
+    de Stage03 (``not agent_input.is_first_attempt()``), justo antes de
+    calcular ``coverage``/``reason_codes``. Reutiliza el mismo campo
+    (``corpus_eligibility``) y el mismo principio ya documentado arriba
+    ("un documento individual no útil o no validable nunca debe detener
+    todo el corpus"), pero para la señal que FASE 1 excluye a propósito
+    (campos científicos como ``main_results``, que el docstring del módulo
+    reserva al quality gate estricto de FASE 2/``build_revision_plan``).
+
+    Una ficha ya en ``EXCLUDE``/``QUARANTINE`` (de FASE 1 o FASE 2) se deja
+    intacta -- esta función nunca revierte ni reevalúa esas decisiones,
+    solo actúa sobre fichas que llegaron ``INCLUDE`` al quality gate y aun
+    así, tras el repair del intento 2, siguen con campos críticos
+    faltantes. No es EXCLUDE (no se descarta el paper del corpus
+    documental; sigue citable/indexable si algún otro consumidor lo
+    necesita) -- es QUARANTINE, igual que las otras señales de esta fase,
+    para que quede fuera del cálculo de cobertura y no bloquee la etapa
+    entera por uno o dos papers puntuales.
+    """
+
+    quality_by_source = {
+        str(row.get("source_filename", "")): row for row in quality_rows
+    }
+    new_cards: list[dict[str, Any]] = []
+    audit_rows: list[dict[str, Any]] = []
+
+    for card in cards:
+        card = dict(card)
+        source = str(card.get("source_filename", ""))
+        already_flagged = card.get(CORPUS_ELIGIBILITY_FIELD) in (EXCLUDE, QUARANTINE)
+        missing = list((quality_by_source.get(source) or {}).get("missing_fields") or ())
+
+        if not already_flagged and missing:
+            card[CORPUS_ELIGIBILITY_FIELD] = QUARANTINE
+            audit_rows.append({
+                "source_filename": source,
+                "reason": f"Campos críticos faltantes tras el intento final: {', '.join(missing)}.",
+                "title_irrecoverable": False,
+                "content_insufficient": False,
+                "relevance_indeterminate": False,
+                "created_at": created_at,
+            })
+
+        new_cards.append(card)
+
+    return {"cards": new_cards, "quarantine_audit_rows": audit_rows}
+
+
 def classify_corpus_eligibility(card: Mapping[str, Any]) -> dict[str, Any]:
     """FASE 2: clasifica UNA ficha en ``INCLUDE`` | ``EXCLUDE`` |
     ``QUARANTINE`` -- construye SIEMPRE sobre ``classify_pre_
