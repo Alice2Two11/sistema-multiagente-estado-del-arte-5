@@ -1973,10 +1973,25 @@ def validate_correction_traceability_row_contract(value: Mapping[str, Any]) -> d
     for field in ("target_issue_codes", "resolved_issue_codes", "remaining_issue_codes", "new_issue_codes", "precheck_reason_codes", "precheck_technical_issue_codes", "comparison_reason_codes", "comparison_technical_issue_codes"):
         result[field] = _phase651a_string_tuple(result[field], field, code)
     comparison_available = result["comparison_stage_availability"] == "AVAILABLE"
+    # comparison_stage_availability sale "AVAILABLE" siempre que cp no sea
+    # None (ver avail() más abajo, línea ~2758: "AVAILABLE" if obj is not
+    # None else ...) -- y cp NUNCA es None, porque comparison_runner corre
+    # incondicionalmente incluso cuando la reverificación no completó
+    # (verification_runtime.py ~1083). En ese caso terminal, el propio
+    # comparison_runner pone hallucination_risk_before/after="NOT_COMPARABLE"
+    # (validation.py ~1098) -- y el contrato del resultado de comparación
+    # YA acepta ese valor explícitamente (validate_before_after_comparison_
+    # result_contract, línea ~1166: risks={"LOW","MEDIUM","HIGH",
+    # "NOT_COMPARABLE"}). HALLUCINATION_RISKS (la constante global) no
+    # incluye "NOT_COMPARABLE" a propósito -- se usa en otros 3 lugares
+    # (riesgo del claim en verificación, confianza del LLM) donde ese
+    # valor nunca debería aparecer -- así que no se amplía globalmente;
+    # se amplía solo aquí, igual que ya hace el contrato hermano.
+    hallucination_risks_with_terminal = HALLUCINATION_RISKS + ("NOT_COMPARABLE",)
     for field in ("hallucination_risk_before", "hallucination_risk_after"):
         if comparison_available and result[field] is None: raise ValueError(f"{code}:{field}:REQUIRED_WHEN_COMPARISON_AVAILABLE")
         if not comparison_available and result[field] is not None: raise ValueError(f"{code}:{field}:MUST_BE_NULL_WITHOUT_COMPARISON")
-        result[field] = _phase651ar_optional_enum(result[field], HALLUCINATION_RISKS, field, code)
+        result[field] = _phase651ar_optional_enum(result[field], hallucination_risks_with_terminal, field, code)
     if comparison_available and result["hallucination_risk_delta"] is None: raise ValueError(f"{code}:hallucination_risk_delta:REQUIRED_WHEN_COMPARISON_AVAILABLE")
     if not comparison_available and result["hallucination_risk_delta"] is not None: raise ValueError(f"{code}:hallucination_risk_delta:MUST_BE_NULL_WITHOUT_COMPARISON")
     result["hallucination_risk_delta"] = _phase651ar_optional_enum(result["hallucination_risk_delta"], REVERIFICATION_RISK_DELTAS, "hallucination_risk_delta", code)
