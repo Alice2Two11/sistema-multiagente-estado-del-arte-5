@@ -98,9 +98,9 @@ def normalize_gap_records(records: list[dict]) -> tuple[list[dict], list[dict], 
         if not gap_id:
             gap_id = f"G{index}"
             _record_repair(repairs, block="research_gaps", index=index, action="DETERMINISTIC_ID_GENERATED", target_key="gap_id", value=gap_id)
-        description = _first_text(record, ("description", "gap", "name", "title"))
+        description = _first_text(record, ("description", "gap", "name", "title", "gap_description"))
         if not record.get("description") and description:
-            source_key = next((k for k in ("gap", "name", "title") if record.get(k)), None)
+            source_key = next((k for k in ("gap", "name", "title", "gap_description") if record.get(k)), None)
             _record_repair(repairs, block="research_gaps", index=index, action="ALIAS_MAPPED", source_key=source_key, target_key="description")
         basis = _first_text(record, ("basis", "evidence", "rationale", "justification", "description", "gap"))
         sources = _normalize_sources(_first_value(record, ("supporting_sources", "sources", "papers", "references"), []))
@@ -158,7 +158,7 @@ def normalize_dimension_records(records: list[dict]) -> tuple[list[dict], list[d
             issues.append({"code": "INVALID_COMPARATIVE_DIMENSION_RECORD", "index": index, "value": repr(raw)})
             continue
         record = deepcopy(raw)
-        dimension = _first_text(record, ("dimension", "name", "title"))
+        dimension = _first_text(record, ("dimension", "name", "title", "dimension_name"))
         description = _first_text(record, ("description", "content", "summary"))
         sources = _normalize_sources(_first_value(record, ("relevant_sources", "sources", "papers", "references"), []))
         if not record.get("relevant_sources") and sources:
