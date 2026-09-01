@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from src.config.verification_policy_config import (
     ATTRIBUTION_ASSESSMENTS,
+    ATTRIBUTION_RELATIONS,
     CONTRADICTION_TYPES,
     CORRECTION_CHANGE_SCOPES,
     CORRECTION_REASON_CODES,
@@ -223,12 +224,25 @@ def build_correction_messages(
         "donde \"text\" es un fragmento copiado EXACTO (carácter por carácter) del claim "
         "original que contenga o esté junto al marcador de la cita referenciada en "
         "old_citation_refs. \"\" no es válido para citation_text_span en ningún caso. "
+        "attribution_relation sigue la MISMA regla: debe ser el valor JSON null siempre que "
+        "action_type != 'CORRECT_ATTRIBUTION' (incluyendo cuando correction_decision no es "
+        "PROPOSE_CHANGE) -- NUNCA \"\" ni ningún string. Solo cuando action_type=='CORRECT_"
+        "ATTRIBUTION', attribution_relation es un string no vacío tomado de allowed_attribution_"
+        "relations. "
         "change_scope tiene un valor válido adicional según el caso: cuando "
         "correction_decision NO es PROPOSE_CHANGE, change_scope debe ser exactamente \"NONE\" "
         "(igual que semantic_change_level); cuando correction_decision SÍ es PROPOSE_CHANGE, "
         "change_scope debe ser uno de allowed_change_scopes (TOKEN/PHRASE/CLAUSE/SENTENCE/"
         "MULTI_SENTENCE) y NUNCA \"NONE\" -- \"NONE\" solo es válido para change_scope cuando "
-        "no hay corrección."
+        "no hay corrección. "
+        "target_text se reemplaza mecánicamente por replacement_text dentro del claim original "
+        "(splice de caracteres, sin limpieza posterior de espacios ni puntuación). Para "
+        "REMOVE_UNSUPPORTED_FRAGMENT (replacement_text=\"\"), target_text DEBE incluir el "
+        "espacio, coma o conector adyacente necesario para que el texto restante quede "
+        "gramaticalmente limpio tras la eliminación -- nunca dejes doble espacio ni un signo de "
+        "puntuación huérfano (ej. \" ,\" o \"  \"). Antes de responder, verifica mentalmente cómo "
+        "queda el texto tras pegar original[:start]+replacement_text+original[end:] y ajusta los "
+        "límites de target_text si el resultado no seria una oración limpia."
     )
     evidence = [{
         "evidence_id": x["evidence_id"], "source_filename": x["source_filename"],
@@ -247,6 +261,7 @@ def build_correction_messages(
         "allowed_change_scopes": list(CORRECTION_CHANGE_SCOPES),
         "allowed_semantic_change_levels": list(CORRECTION_SEMANTIC_CHANGE_LEVELS),
         "allowed_reason_codes": list(CORRECTION_REASON_CODES),
+        "allowed_attribution_relations": list(ATTRIBUTION_RELATIONS),
         "previous_errors": list(previous_errors),
         "response_fields": list(CORRECTION_RESPONSE_FIELDS),
         "correction_contract": {
@@ -265,6 +280,19 @@ def build_correction_messages(
                 "opposite of metric_context/unit_context. When action_type == "
                 "'REPLACE_CITATION', it must be an object {coordinate_base, coordinate_system, "
                 "start, end, text} -- never a bare string, not even the citation text itself."
+            ),
+            "attribution_relation_null_rule": (
+                "attribution_relation must be the JSON value null whenever action_type != "
+                "'CORRECT_ATTRIBUTION' -- never \"\" (empty string). Same rule as action_type/"
+                "citation_text_span. When action_type == 'CORRECT_ATTRIBUTION', it must be a "
+                "non-empty string from allowed_attribution_relations."
+            ),
+            "target_text_removal_whitespace_rule": (
+                "target_text is spliced mechanically as original[:start]+replacement_text+"
+                "original[end:], with no automatic whitespace/punctuation cleanup. For "
+                "REMOVE_UNSUPPORTED_FRAGMENT (replacement_text=''), target_text must include "
+                "the adjacent space/connector so the spliced result has no double space and no "
+                "orphaned punctuation."
             ),
             "narrow_scope_rule": "NARROW_SCOPE requires non-empty new_conditions supported by authorized evidence and cannot alter citations, attribution, or numeric values",
             "format_retry_semantics": "max_correction_format_repair_attempts counts extra calls after the first format-invalid response",
