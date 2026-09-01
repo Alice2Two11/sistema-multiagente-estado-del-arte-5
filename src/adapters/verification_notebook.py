@@ -521,10 +521,11 @@ def validate_agent07_artifact_manifest_contract(value: Agent07ArtifactManifest |
 
 def execute_prepared_agent07(*, store: StateStore, prepared: PreparedAgent07Execution, dependencies: VerificationRuntimeDependencies) -> ExecutedAgent07Execution:
     validate_prepared_agent07_execution_contract(prepared)
-    from src.tools.verification.validation import aggregation_diagnostic_sink
+    from src.tools.verification.validation import aggregation_diagnostic_sink, referential_diagnostic_sink
     _staging_dir = Path(prepared.runtime_input.experiment_paths.get("agent07_staging_dir", prepared.runtime_input.experiment_paths["root"] + "/.agent07_staging")) / prepared.decision_id
     _diagnostic_path = _staging_dir / "aggregation_invalid_elements_debug.json"
-    with aggregation_diagnostic_sink(_diagnostic_path):
+    _referential_diagnostic_path = _staging_dir / "aggregation_identity_conflicts_debug.json"
+    with aggregation_diagnostic_sink(_diagnostic_path), referential_diagnostic_sink(_referential_diagnostic_path):
         runtime_result=run_agent07_in_memory(prepared.runtime_input,dependencies=dependencies); validate_agent07_runtime_result_contract(runtime_result)
     output_dir=Path(prepared.runtime_input.experiment_paths.get("agent07_output_dir",prepared.runtime_input.experiment_paths["root"]+"/07_verification"))
 

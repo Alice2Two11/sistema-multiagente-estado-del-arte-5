@@ -2437,6 +2437,42 @@ def validate_provisional_referential_integrity_result_contract(value: Mapping[st
     return _phase653_validate_referential_result(value)
 
 
+_REFERENTIAL_DIAGNOSTIC_SINK: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "_REFERENTIAL_DIAGNOSTIC_SINK", default=None
+)
+
+
+@contextmanager
+def referential_diagnostic_sink(path: Path | None):
+    """Instrumentación de diagnóstico TEMPORAL y estrictamente opt-in --
+    hermana de ``aggregation_diagnostic_sink`` (mismo patrón exacto),
+    pero para la etapa de INTEGRIDAD REFERENCIAL (``validate_provisional_
+    referential_integrity``), no la de validación de colecciones.
+
+    Mientras el contexto está activo, si esa función encuentra algún
+    ``identity_conflict`` u ``orphan_record`` al cruzar las 6 colecciones
+    (claim_verification_records, correction_proposals, correction_
+    reverification_inputs, correction_precheck_results, independent_
+    reverification_results, before_after_comparison_results), además de
+    su comportamiento normal (idéntico, sin cambios), escribe un archivo
+    de diagnóstico de solo lectura en ``path`` con la lista completa de
+    conflictos/huérfanos -- reason_code, correction_id, campo y los dos
+    valores en conflicto -- que el bundle oficial nunca expone (solo
+    conserva los reason_codes como strings sueltos en
+    ``referential_issue_codes``).
+
+    Cuando ``path`` es ``None`` (default fuera de este contexto), la
+    función se comporta EXACTAMENTE igual que antes -- no se activa
+    ningún camino nuevo, no se escribe ningún archivo. Reversible
+    quitando este bloque y su uso en ``execute_prepared_agent07``."""
+
+    token = _REFERENTIAL_DIAGNOSTIC_SINK.set(path)
+    try:
+        yield
+    finally:
+        _REFERENTIAL_DIAGNOSTIC_SINK.reset(token)
+
+
 def validate_provisional_referential_integrity(collection_result: Any):
     from src.tools.verification.traceability import ProvisionalReferentialIntegrityResult
     from src.tools.verification.corrections import fingerprint_text
@@ -2515,6 +2551,23 @@ def validate_provisional_referential_integrity(collection_result: Any):
         record={"correction_id":cid,"claim_id":p["claim_id"],"section_id":p["section_id"],"proposal":p,"reverification_input":ri,"precheck":pc,"reverification":rv,"comparison":cp,"join_status":"INVALID" if len(issues)>before else ("PARTIAL" if None in (ri,pc,rv,cp) else "VALID")}
         (rejected if len(issues)>before else joined).append(record)
     invalid=bool(issues);status="INVALID" if invalid else ("PARTIAL" if warnings else "VALID")
+    # Instrumentación de diagnóstico opt-in (ver referential_diagnostic_sink
+    # más arriba): NUNCA afecta issues/warnings/orphans/conflicts/payload --
+    # solo lee esas listas ya construidas y las vuelca a disco si el sink
+    # está activo. Con el sink en None (comportamiento por defecto fuera de
+    # este contexto), este bloque no hace nada -- cero costo, cero cambio
+    # de comportamiento observable.
+    _referential_sink_path = _REFERENTIAL_DIAGNOSTIC_SINK.get()
+    if _referential_sink_path is not None and (conflicts or orphans):
+        import json as _json
+        _referential_sink_path.parent.mkdir(parents=True, exist_ok=True)
+        _referential_sink_path.write_text(
+            _json.dumps(
+                {"identity_conflicts": conflicts, "orphan_records": orphans},
+                indent=2, ensure_ascii=False, default=str,
+            ),
+            encoding="utf-8",
+        )
     payload=dict(joined_claim_records=joined_claims,joined_correction_records=tuple(sorted(joined,key=lambda x:(x["section_id"],x["claim_id"],x["correction_id"]))),rejected_join_candidates=tuple(sorted(rejected,key=_phase652_canonical_json)),referential_issue_codes=tuple(sorted(set(issues))),referential_warnings=tuple(sorted(set(warnings))),orphan_records=tuple(sorted(orphans,key=_phase652_canonical_json)),identity_conflicts=tuple(sorted(conflicts,key=_phase652_canonical_json)),referential_validation_status=status,aggregation_status="INVALID" if invalid else ("PARTIAL" if warnings else "VALID"),metrics_status="NOT_COMPUTED",result_contract_valid=False)
     n=_phase653_validate_referential_result(payload,allow_unvalidated_flag=True);n["result_contract_valid"]=True;r=ProvisionalReferentialIntegrityResult(**n);validate_provisional_referential_integrity_result_contract(r.to_dict());return r
 
