@@ -270,7 +270,13 @@ def build_correction_messages(
         "new_numeric_pairs, old_attribution_elements, new_attribution_elements, new_attributions, "
         "new_entities, new_technical_terms. "
         "Si tu action_type es una de estas y alguno de sus campos prohibidos queda con contenido, "
-        "la respuesta se rechaza entera -- revisa la lista antes de responder."
+        "la respuesta se rechaza entera -- revisa la lista antes de responder. "
+        "new_conditions (ADD_QUALIFICATION/NARROW_SCOPE) tiene un contrato más estricto que "
+        "new_entities/new_technical_terms: cada string debe ser una subcadena EXACTA y CONTIGUA "
+        "(copiada carácter por carácter de un solo chunk de eligible_evidence, sin importar "
+        "mayúsculas/minúsculas) -- nunca una paráfrasis ni una síntesis de varios chunks, aunque "
+        "sea correcta en significado. Si no existe un fragmento textual exacto que puedas copiar, "
+        "no propongas ADD_QUALIFICATION/NARROW_SCOPE para ese contenido."
     )
     evidence = [{
         "evidence_id": x["evidence_id"], "source_filename": x["source_filename"],
@@ -310,6 +316,17 @@ def build_correction_messages(
                 "start, end, text} -- never a bare string, not even the citation text itself."
             ),
             "narrow_scope_rule": "NARROW_SCOPE requires non-empty new_conditions supported by authorized evidence and cannot alter citations, attribution, or numeric values",
+            "new_conditions_verbatim_rule": (
+                "Every string in new_conditions must appear as an EXACT, CONTIGUOUS substring "
+                "(case-insensitive) inside the eligible_evidence text -- copy it character-for-"
+                "character from a single evidence chunk. A paraphrase, summary, or synthesis "
+                "across multiple evidence chunks -- even if factually accurate and fully "
+                "supported in meaning -- fails validation (UNSUPPORTED_NEW_INFORMATION) because "
+                "the check is a literal substring match, not a semantic one. If no evidence chunk "
+                "contains the exact phrase you need, either find a shorter exact excerpt that "
+                "does appear verbatim, or do not use ADD_QUALIFICATION/NARROW_SCOPE for that "
+                "content."
+            ),
             "format_retry_semantics": "max_correction_format_repair_attempts counts extra calls after the first format-invalid response",
             "reason_codes_rule": (
                 "reason_codes must be a subset of allowed_reason_codes exactly as listed -- action_type "
