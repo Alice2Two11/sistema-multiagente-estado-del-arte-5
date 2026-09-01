@@ -576,11 +576,13 @@ su fingerprint no existe, falla explícitamente en vez de degradarse a
 
 ## 20. Limitaciones actuales
 
-- La ruta real de 07/08 (con LLM y Chroma reales) **no se ha ejecutado
-  todavía** en este entorno de desarrollo — toda la migración se validó con
-  dobles deterministas (LLM, retriever, embeddings, BERTScore). El smoke
-  test real en Colab es el primer punto donde se ejercita la integración
-  con red real.
+- **Actualización**: la ruta real de 07/08 (con LLM y Chroma reales) **ya
+  se ejecutó** numerosas veces desde que se escribió esta sección — ver
+  sección 27 para el registro completo de bugs encontrados y corregidos
+  durante esa fase, y el estado empírico real del ciclo `06 ↔ 07` (que
+  sigue sin observarse completo de punta a punta con datos reales, a
+  diferencia de lo que sugiere la sección 21 sobre las pruebas con
+  dobles).
 - El gate determinista de precheck para claims **cuantitativos**
   (`numeric_risk`) está caracterizado (ver
   `tests/orchestration/test_verification_numeric_risk_characterization.py`)
@@ -601,18 +603,25 @@ su fingerprint no existe, falla explícitamente en vez de degradarse a
   (`VerificationAgent`, `propose_correction`,
   `build_provisional_verification_traceability_bundle`,
   `DraftWritingAgent` en modo `REVISION`), sustituyendo únicamente LLM,
-  Chroma y retriever por dobles deterministas.
+  Chroma y retriever por dobles deterministas. **Esto prueba que el
+  cableado del ciclo funciona, no que se haya observado completarse con
+  un LLM real** — ver sección 27 para el estado empírico real tras la
+  fase de integración con OpenAI/Chroma.
 - La etapa 08 completa (métricas automáticas, factuales, LLM Judge,
   persistencia de los 15 outputs, fingerprints, contrato transaccional,
   `StageSpec`) está migrada y probada con las mismas sustituciones.
 
 ## 22. Advertencia: smoke test real con Chroma y OpenAI
 
-**Nada de lo anterior sustituye una corrida real.** Todas las pruebas de
-este repositorio usan dobles deterministas para LLM, Chroma y retriever —
-ninguna ejercita la integración real de red, autenticación, límites de tasa
-o comportamiento no determinista de un LLM real. El primer punto donde eso
-se valida es el smoke test real descrito en `COLAB_SMOKE_TEST.md`, que debe
+**Nada de la sección 21 (pruebas con dobles) sustituye una corrida real.**
+El conjunto de pruebas automatizadas de este repositorio (`tests/`) usa
+dobles deterministas para LLM, Chroma y retriever — ninguna prueba
+automatizada ejercita la integración real de red, autenticación, límites
+de tasa o comportamiento no determinista de un LLM real. Esa integración
+real **ya se ejecutó** numerosas veces desde que se escribió esta
+advertencia (ver sección 27 para el registro completo); el smoke test
+descrito en `COLAB_SMOKE_TEST.md` sigue siendo el procedimiento
+recomendado para verificar una instalación nueva, que debe
 ejecutarse en un entorno con credenciales de OpenAI y una colección Chroma
 real.
 
@@ -696,3 +705,180 @@ desincronizarse** si una se edita sin la otra. Se conservan porque
 notebooks reales todavía los usan; la fuente de verdad para todo lo que
 ejecuta el orquestador (03→08 vía `StateStore`/`StageSpec`) es siempre
 `active_experiment.json`, nunca estos módulos.
+
+## 27. Integración real con OpenAI/Chroma — bugs encontrados y corregidos
+
+Esta sección documenta la primera fase real de integración (posterior a
+la migración descrita en las secciones 1-26, que se validó únicamente con
+dobles deterministas — ver sección 20). Se corrieron numerosos
+experimentos reales, con OpenAI y Chroma en producción, sobre distintos
+corpus de papers. Cada bug se encontró a partir de una corrida real
+fallida (no por inspección estática) y se corrigió en el código
+productivo, nunca relajando ningún validador para "dejar pasar" el caso
+que fallaba.
+
+### Bugs de contrato campo-por-campo (`src/tools/verification/prompting.py`,
+### `corrections.py`)
+
+El patrón recurrente: un campo con un contrato estricto (tipo exacto,
+enum cerrado, distinción entre dos campos de nombre parecido) que el
+prompt nunca le explicaba al modelo, así que el LLM de corrección
+generalizaba mal una regla de un campo hacia otro campo vecino con
+contrato distinto. Todos se corrigieron documentando la regla
+explícitamente en el prompt (`build_correction_messages`), sin tocar
+ningún validador:
+
+- `action_type`: debe ser `null` (nunca `""`) cuando `correction_decision
+  != PROPOSE_CHANGE` — regla opuesta a `metric_context`/`unit_context`
+  (que sí usan `""`), y el modelo las confundía.
+- `old_citation_refs`/`new_citation_refs`: objetos
+  `{source_filename, chunk_id}`, nunca IDs sueltos.
+- `evidence_ids`: lista de IDs simples (`["E03"]`), nunca objetos —
+  contagio del contrato de `citation_refs` hacia este campo tras
+  corregir el punto anterior.
+- `old_numeric_pairs`/`new_numeric_pairs`: pares `[antiguo, nuevo]` de
+  exactamente 2 strings.
+- `citation_text_span`: `null` salvo `action_type=='REPLACE_CITATION'`,
+  donde es un objeto con offsets de carácter exactos. **Limitación
+  arquitectónica pendiente, no corregida**: ese objeto exige un
+  `base_text_fingerprint` que el payload nunca le da al modelo — si
+  `REPLACE_CITATION` alguna vez se usa con un span real, fallará por
+  `ORIGINAL_FINGERPRINT_MISMATCH` hasta que el código calcule ese span
+  de forma determinística en vez de pedírselo al LLM.
+- `attribution_relation`: misma regla que `action_type`; además faltaba
+  `allowed_attribution_relations` en el payload — agregado.
+- `target_text` en `REMOVE_UNSUPPORTED_FRAGMENT`: el splice es mecánico
+  (`original[:start]+replacement+original[end:]`, sin limpieza de
+  espacios/puntuación) — el prompt no explicaba que `target_text` debe
+  incluir el espacio/conector adyacente para no dejar huecos
+  gramaticales.
+- Matriz cerrada de campos prohibidos por `action_type` (existía en
+  código desde siempre, nunca documentada en el prompt) — transcrita
+  literal al prompt.
+- `new_conditions` (`ADD_QUALIFICATION`/`NARROW_SCOPE`): exige una
+  subcadena **exacta y contigua** de la evidencia autorizada, no una
+  paráfrasis ni síntesis — el check real (`x.casefold() not in
+  corpus_cf`) es mucho más estricto de lo que el prompt daba a entender.
+
+### Bugs reales de código (no de prompt)
+
+- `change_scope`: `"NONE"` no estaba en `CORRECTION_CHANGE_SCOPES` pero
+  el validador downstream (`validate_correction_proposal_contract`) lo
+  exigía cuando no hay corrección — dos validadores contradictorios.
+  Corregido en `validate_correction_response` (`corrections.py`) para
+  exigir `"NONE"` explícito en ese caso, en vez de validar contra el
+  enum de alcances reales.
+- `raw_attempts`/`raw_text`: se guardaba el objeto `AIMessage` de
+  LangChain crudo (no serializable a JSON) en vez de normalizarlo a
+  texto — rompía la agregación con
+  `AGGREGATION_COLLECTION_ELEMENT_INVALID:NON_JSON_VALUE:AIMessage`.
+  Corregido con `_raw_llm_text()`, reutilizando la misma normalización
+  que ya usaba `verification_agent.py` (que nunca tuvo este bug).
+- `CORRECTION_VALIDATION_ISSUE_CODES` (el enum del contrato terminal de
+  `validation_issue_codes`) no incluía varios códigos reales que
+  `corrections.py`/`prompting.py` producen al agotar reintentos,
+  incluidos códigos con sufijo dinámico
+  (`CORRECTION_FIELD_INVALID:<campo>`). Corregido agregando los códigos
+  estáticos faltantes y soporte de prefijos dinámicos en
+  `_terminal_string_seq` (`validation.py`) — sigue rechazando cualquier
+  código no enumerado.
+- `_terminal_nonempty()` le hacía `.strip()` a `proposed_claim_text`
+  (contenido, no metadata) antes de compararlo carácter por carácter
+  contra la reconstrucción mecánica del claim — una corrección legítima
+  que termina en espacio (ej. elimina el último fragmento de una
+  oración) disparaba
+  `CORRECTION_PROPOSAL_PROPOSED_CLAIM_RECONSTRUCTION_MISMATCH` en falso.
+  Corregido: ese campo ya no se muta, solo se valida que no esté vacío.
+- `validate_provisional_referential_integrity`: dos de sus chequeos de
+  consistencia (fingerprints de precheck; `target_issue_codes` de
+  comparación) no contemplaban el caso terminal donde el precheck
+  falla/la reverificación no completa — `comparison_runner` corre
+  igual (produce un registro terminal con valores por defecto) porque
+  `verification_runtime.py` no lo condiciona a que la reverificación
+  haya completado. Corregido con guards explícitos que solo comparan
+  cuando el precheck pasó / la reverificación completó.
+- `hallucination_risk_before`/`hallucination_risk_after`: el validador
+  de la fila de trazabilidad usaba el enum global `HALLUCINATION_RISKS`
+  (`LOW`/`MEDIUM`/`HIGH`), que no incluye `"NOT_COMPARABLE"` — el valor
+  terminal que el propio contrato del resultado de comparación sí
+  acepta explícitamente. Corregido con un enum ampliado solo en ese
+  punto, sin tocar `HALLUCINATION_RISKS` global (se usa en otros 3
+  lugares donde `"NOT_COMPARABLE"` nunca debería aparecer).
+- `gate_classification` se ponía incondicionalmente en el registro
+  terminal de comparación fallida (`_comparison_failure_result`), aun
+  para acciones científicas reales — violando el contrato que exige que
+  sea `None` cuando `is_gate_result=False`. Corregido para que solo se
+  ponga en el caso gate real (`correction_action_type=="NOT_AVAILABLE"`).
+- Instrumentación de diagnóstico nueva y **estrictamente opt-in**:
+  `referential_diagnostic_sink()` (hermano de
+  `aggregation_diagnostic_sink()` ya existente), que vuelca
+  `identity_conflicts`/`orphan_records` a
+  `aggregation_identity_conflicts_debug.json` en el staging de la
+  corrida cuando está activo. No cambia ningún comportamiento cuando el
+  sink está en `None` (el caso por defecto).
+
+### Métricas de la etapa 08 (`src/tools/evaluation/claim_citation_audit.py`)
+
+- `hallucination_rate` comparaba contra el veredicto literal
+  `"unsupported"`, que **no existe** en `SCIENTIFIC_VERDICTS`
+  (`NOT_APPLICABLE`, `NOT_EVALUATED`, `SUPPORTED`, `PARTIALLY_SUPPORTED`,
+  `CONTRADICTED`, `INSUFFICIENT_EVIDENCE`, `NOT_VERIFIABLE`) — garantizaba
+  `0.0` siempre, sin importar el contenido real del experimento.
+  Corregido a `"contradicted"` (el valor real que representa
+  alucinación confirmada). Se agregaron dos métricas explícitas más,
+  sin reemplazar la anterior:
+  - `hallucination_rate_broad`: `contradicted` + `insufficient_evidence`
+    + `not_verifiable` — cualquier claim sin respaldo confirmado, activo
+    o pasivo.
+  - `unverified_rate`: lo anterior + `not_evaluated` — toda la
+    incertidumbre, incluyendo claims que el sistema nunca llegó a
+    evaluar.
+
+### Retriever RAG (`Landgraph/02_rag_chroma_retriever.ipynb`, notebook
+### aparte del repositorio de `src/`)
+
+`retrieve_raw()` ordenaba los candidatos de Chroma solo por `score`
+(similitud coseno), sin desempate. Chroma usa HNSW (índice aproximado)
+por defecto, que no garantiza orden estable entre llamadas idénticas
+cuando hay scores empatados o muy cercanos — el mismo chunk de evidencia
+podía terminar con un handle (`E1`, `E2`, ...) distinto entre corridas
+del agente redactor, aunque el contenido recuperado fuera el mismo.
+Corregido agregando `chunk_id` como segundo criterio de orden (fix
+parcial: soluciona la inestabilidad de orden entre candidatos que sí
+llegaron a la lista final; si Chroma devuelve un **conjunto** distinto de
+candidatos entre llamadas — no solo en distinto orden — este fix no lo
+cubre; requeriría búsqueda exacta en vez de HNSW).
+
+### Estado empírico real del ciclo `06 ↔ 07`
+
+La sección 21 documenta que el ciclo está probado de punta a punta con
+**dobles deterministas**. Eso sigue siendo cierto y es una prueba válida
+de que el cableado (`RETURN`→06→`REVISION`→07→`ADVANCE`) funciona. Pero,
+adicionalmente, y esto es información nueva de esta fase: **en ninguna de
+las corridas reales con OpenAI/Chroma realizadas durante esta fase de
+integración se observó el ciclo completarse de punta a punta** (es decir,
+`RETURN` real hacia 06, seguido de un `ADVANCE` real hacia 08 después de
+la revisión). El patrón observado consistentemente, corrida tras corrida,
+tras corregir los 15 bugs de arriba:
+
+- Los claims con evidencia débil (retrieval con pocos candidatos o baja
+  cobertura semántica) terminan en `DEFER_TO_MANUAL_REVIEW` antes de
+  invocar siquiera al LLM de corrección (`llm_calls: 0`).
+- Cuando sí se invoca al LLM de corrección y se llega a
+  `PROPOSE_CHANGE`, la propuesta suele rechazarse en el validador
+  semántico (`UNSUPPORTED_NEW_INFORMATION`,
+  `REMOVAL_ALTERS_SUPPORTED_MEANING`) — la causa más frecuente es que el
+  modelo sintetiza/parafrasea contenido en vez de copiarlo literal de la
+  evidencia (ver el contrato de `new_conditions` arriba).
+- La corrida real que más lejos llegó alcanzó
+  `CORRECTION_LLM_INVOKED` → `ACCEPTED_FOR_REVERIFICATION`, pero no hay
+  registro todavía de un `RETURN`→06 real seguido de un `ADVANCE`→08.
+
+Esto no invalida el diseño — los bugs corregidos arriba eran genuinos y
+la ruta real está mucho más despejada ahora que al inicio de esta fase —
+pero si algún documento de tesis afirma que el ciclo `06 ↔ 07` "se validó"
+o "se completó" con datos reales, esa afirmación necesita matizarse: hoy
+solo tiene respaldo empírico real la ruta `07 → HALT_STAGE` (con o sin
+revisión manual pendiente), no la ruta completa `07 → 06 → 07 → 08`. Ver
+también sección 20.
+

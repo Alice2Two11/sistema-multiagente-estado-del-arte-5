@@ -17,21 +17,31 @@ orquestador**, incluida la 08 (evaluación) y el ciclo correctivo real
 
 - Pipeline completo ejecutable: `00 → 01 → 02 → 03 → 03B → 04 → 05 → 06 →
   07 ↔ 06 → 07 → 08`.
-- Ciclo correctivo `06 ↔ 07` probado de punta a punta con código
-  productivo real (no simulado): 07 detecta un claim corregible, emite
-  `RETURN`, 06 corrige solo la sección afectada en modo `REVISION`, 07
-  reverifica y emite `ADVANCE` hacia 08.
+- Ciclo correctivo `06 ↔ 07` probado de punta a punta **con dobles
+  deterministas** (código productivo real, LLM/Chroma/retriever
+  simulados): 07 detecta un claim corregible, emite `RETURN`, 06 corrige
+  solo la sección afectada en modo `REVISION`, 07 reverifica y emite
+  `ADVANCE` hacia 08.
+- **Actualización tras la fase de integración real (OpenAI/Chroma)**: se
+  corrieron numerosos experimentos reales y se encontraron y corrigieron
+  15+ bugs de contrato (prompt del corrector, validadores de
+  `validation.py`, la fórmula de `hallucination_rate` de 08, y un bug de
+  no-determinismo en el retriever RAG). Registro completo en
+  `README.md` sección 27. **El ciclo `06 ↔ 07` sigue sin observarse
+  completo de punta a punta en ninguna corrida real** — las corridas
+  reales llegan hasta `HALT_STAGE` (con o sin revisión manual pendiente),
+  nunca hasta un `RETURN`→06 real seguido de `ADVANCE`→08. No asumas que
+  está validado con datos reales solo porque lo está con dobles.
 - Etapa 08 migrada completa: métricas automáticas (ROUGE-L, BERTScore,
-  similitud semántica), LLM Judge, métricas factuales/trazabilidad,
-  persistencia de los 15 outputs, fingerprints, contrato transaccional y
-  `StageSpec` real conectado al orquestador.
+  similitud semántica), LLM Judge, métricas factuales/trazabilidad
+  (incluye `hallucination_rate`, `hallucination_rate_broad` y
+  `unverified_rate` — ver README sección 27), persistencia de los 15
+  outputs, fingerprints, contrato transaccional y `StageSpec` real
+  conectado al orquestador.
 - 07C **no** está en el flujo activo — ver `README.md` sección 6.
 - **468/468** escenarios pasando en 37 suites de `tests/orchestration/`
   (correr con `python3 archivo.py`, no con `pytest` — ver advertencia
   abajo).
-- Ninguna corrida real con OpenAI/Chroma se ejecutó todavía en este
-  entorno de desarrollo — todo se validó con dobles deterministas. El
-  smoke test real (`COLAB_SMOKE_TEST.md`) es el siguiente paso.
 
 ## Código real por etapa (módulos reales, verificados en disco)
 
@@ -88,7 +98,11 @@ previa de este archivo.
   -> 07 reverifica -> ADVANCE -> 08
 ```
 
-Detalle completo en `README.md`, secciones 6 y 17.
+Cableado y probado con dobles deterministas (ver arriba). **No observado
+completo con datos reales todavía** — ver `README.md` sección 27 para el
+patrón real que sí se observó (`DEFER_TO_MANUAL_REVIEW` por evidencia
+débil, o `PROPOSE_CHANGE` rechazado en el validador semántico). Detalle
+completo en `README.md`, secciones 6, 17 y 27.
 
 ## Ejecutar el pipeline
 
