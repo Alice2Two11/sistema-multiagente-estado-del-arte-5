@@ -2522,14 +2522,28 @@ def validate_provisional_referential_integrity(collection_result: Any):
             else:
                 for left,right,code in (("claim_id","claim_id","AGGREGATION_CORRECTION_ID_CLAIM_CONFLICT"),("section_id","section_id","AGGREGATION_SECTION_ID_MISMATCH"),("proposal_fingerprint","proposal_fingerprint","AGGREGATION_PROPOSAL_FINGERPRINT_MISMATCH"),("proposed_claim_text_fingerprint","virtual_proposed_claim_text_fingerprint","AGGREGATION_PROPOSED_TEXT_FINGERPRINT_MISMATCH")):
                     if ri[left]!=pc[right]:add_conflict(cid,code,right,(ri[left],pc[right]))
-                try:
-                    rows=tuple(ri["authorized_evidence"]); efp=compute_frozen_evidence_snapshot_fingerprint(rows)
-                    pfp=compute_reverification_policy_fingerprint(ri["policy"])
-                    ctx=build_reverification_claim_context(ri,pc); cfp=compute_reverification_context_fingerprint(ctx,evidence_snapshot_fingerprint=efp,policy_fingerprint=pfp)
-                    if efp!=pc["frozen_evidence_snapshot_fingerprint"]:add_conflict(cid,"AGGREGATION_EVIDENCE_SNAPSHOT_FINGERPRINT_MISMATCH","frozen_evidence_snapshot_fingerprint",(efp,pc["frozen_evidence_snapshot_fingerprint"]))
-                    if pfp!=pc["reverification_policy_fingerprint"]:add_conflict(cid,"AGGREGATION_REVERIFICATION_POLICY_FINGERPRINT_MISMATCH","reverification_policy_fingerprint",(pfp,pc["reverification_policy_fingerprint"]))
-                    if cfp!=pc["reverification_context_fingerprint"]:add_conflict(cid,"AGGREGATION_REVERIFICATION_CONTEXT_FINGERPRINT_MISMATCH","reverification_context_fingerprint",(cfp,pc["reverification_context_fingerprint"]))
-                except Exception as exc:add_conflict(cid,"AGGREGATION_AUTHORIZED_EVIDENCE_CONTENT_MISMATCH","authorized_evidence",(type(exc).__name__,str(exc)))
+                # El recálculo de fingerprints de más abajo (build_reverification_
+                # claim_context) exige precheck_status=="PRECHECK_PASSED" -- lo
+                # hace explícito con su propio ValueError("REVERIFICATION_PRECHECK_
+                # NOT_PASSED"). pc/rv/cp SIEMPRE existen para toda propuesta
+                # aceptada (comparison_runner corre incondicionalmente en
+                # verification_runtime.py, línea ~1083, sin condicionar a que la
+                # reverificación haya completado) -- así que un precheck legítimamente
+                # BLOCKED/REJECTED entraba aquí igual y el ValueError esperado se
+                # capturaba como si fuera un fallo de contenido real
+                # (AGGREGATION_AUTHORIZED_EVIDENCE_CONTENT_MISMATCH), en vez de
+                # reconocerse como el resultado terminal válido que es. Se salta
+                # el recálculo cuando el precheck no pasó -- no hay fingerprints
+                # de contenido real que comparar en ese caso.
+                if pc["precheck_status"]=="PRECHECK_PASSED":
+                    try:
+                        rows=tuple(ri["authorized_evidence"]); efp=compute_frozen_evidence_snapshot_fingerprint(rows)
+                        pfp=compute_reverification_policy_fingerprint(ri["policy"])
+                        ctx=build_reverification_claim_context(ri,pc); cfp=compute_reverification_context_fingerprint(ctx,evidence_snapshot_fingerprint=efp,policy_fingerprint=pfp)
+                        if efp!=pc["frozen_evidence_snapshot_fingerprint"]:add_conflict(cid,"AGGREGATION_EVIDENCE_SNAPSHOT_FINGERPRINT_MISMATCH","frozen_evidence_snapshot_fingerprint",(efp,pc["frozen_evidence_snapshot_fingerprint"]))
+                        if pfp!=pc["reverification_policy_fingerprint"]:add_conflict(cid,"AGGREGATION_REVERIFICATION_POLICY_FINGERPRINT_MISMATCH","reverification_policy_fingerprint",(pfp,pc["reverification_policy_fingerprint"]))
+                        if cfp!=pc["reverification_context_fingerprint"]:add_conflict(cid,"AGGREGATION_REVERIFICATION_CONTEXT_FINGERPRINT_MISMATCH","reverification_context_fingerprint",(cfp,pc["reverification_context_fingerprint"]))
+                    except Exception as exc:add_conflict(cid,"AGGREGATION_AUTHORIZED_EVIDENCE_CONTENT_MISMATCH","authorized_evidence",(type(exc).__name__,str(exc)))
         if rv is not None:
             if pc is None:add_orphan("independent_reverification_results",cid,"AGGREGATION_ORPHAN_REVERIFICATION_RESULT",rv.get("claim_id"))
             else:
@@ -2542,7 +2556,12 @@ def validate_provisional_referential_integrity(collection_result: Any):
             else:
                 for f,code in (("claim_id","AGGREGATION_CORRECTION_ID_CLAIM_CONFLICT"),("section_id","AGGREGATION_SECTION_ID_MISMATCH"),("proposal_fingerprint","AGGREGATION_PROPOSAL_FINGERPRINT_MISMATCH"),("virtual_proposed_claim_text_fingerprint","AGGREGATION_PROPOSED_TEXT_FINGERPRINT_MISMATCH"),("frozen_evidence_snapshot_fingerprint","AGGREGATION_EVIDENCE_SNAPSHOT_FINGERPRINT_MISMATCH"),("reverification_context_fingerprint","AGGREGATION_REVERIFICATION_CONTEXT_FINGERPRINT_MISMATCH")):
                     if cp[f]!=rv[f]:add_conflict(cid,code,f,(rv[f],cp[f]))
-                if ri and tuple(cp["target_issue_codes"])!=tuple(ri["target_issue_codes"]):add_conflict(cid,"AGGREGATION_TARGET_ISSUE_WITHOUT_PROVENANCE","target_issue_codes",(tuple(ri["target_issue_codes"]),tuple(cp["target_issue_codes"])))
+                # comparison_runner corre siempre (misma nota que arriba), así que
+                # cp existe incluso cuando la reverificación nunca completó -- en
+                # ese caso cp["target_issue_codes"] queda vacío por diseño (no hubo
+                # comparación real que ejecutar), no es un mismatch real contra
+                # ri["target_issue_codes"]. Se compara solo cuando rv sí completó.
+                if ri and rv is not None and rv.get("reverification_execution_status")=="COMPLETED" and tuple(cp["target_issue_codes"])!=tuple(ri["target_issue_codes"]):add_conflict(cid,"AGGREGATION_TARGET_ISSUE_WITHOUT_PROVENANCE","target_issue_codes",(tuple(ri["target_issue_codes"]),tuple(cp["target_issue_codes"])))
                 if cp["correction_action_type"]!=p["action_type"]:add_conflict(cid,"AGGREGATION_CORRECTION_ACTION_MISMATCH","correction_action_type",(p["action_type"],cp["correction_action_type"]))
         if pc is None and ri is not None:warnings.append("AGGREGATION_PROPOSAL_NOT_REVERIFIED")
         elif pc and rv is None:
