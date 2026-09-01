@@ -66,9 +66,9 @@ def normalize_theme_records(records: list[dict]) -> tuple[list[dict], list[dict]
         if not theme_id:
             theme_id = f"T{index}"
             _record_repair(repairs, block="themes", index=index, action="DETERMINISTIC_ID_GENERATED", target_key="theme_id", value=theme_id)
-        theme_name = _first_text(record, ("theme_name", "theme", "name", "title"))
+        theme_name = _first_text(record, ("theme_name", "theme", "name", "title", "theme_title"))
         if not record.get("theme_name") and theme_name:
-            source_key = next((k for k in ("theme", "name", "title") if record.get(k)), None)
+            source_key = next((k for k in ("theme", "name", "title", "theme_title") if record.get(k)), None)
             _record_repair(repairs, block="themes", index=index, action="ALIAS_MAPPED", source_key=source_key, target_key="theme_name")
         description = _first_text(record, ("description", "summary", "content", "evidence"))
         if not description and theme_name:
