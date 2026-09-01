@@ -159,11 +159,17 @@ def auto_quarantine_missing_critical_fields(
     intacta -- esta función nunca revierte ni reevalúa esas decisiones,
     solo actúa sobre fichas que llegaron ``INCLUDE`` al quality gate y aun
     así, tras el repair del intento 2, siguen con campos críticos
-    faltantes. No es EXCLUDE (no se descarta el paper del corpus
-    documental; sigue citable/indexable si algún otro consumidor lo
-    necesita) -- es QUARANTINE, igual que las otras señales de esta fase,
-    para que quede fuera del cálculo de cobertura y no bloquee la etapa
-    entera por uno o dos papers puntuales.
+    faltantes. Pone ``corpus_eligibility=QUARANTINE`` (mismo campo/
+    principio que las otras señales de esta fase) Y ``include_in_state_
+    of_art=False`` -- este segundo flag es imprescindible porque, a
+    diferencia de FASE 1 (que corre antes de relevancia y por tanto ya
+    bloquea el avance del paper), este mecanismo corre AL FINAL del
+    intento 2, después de que la clasificación de relevancia ya puso
+    ``include_in_state_of_art=True``. Sin apagarlo explícitamente aquí,
+    03B/04/06 (que filtran por ese campo, no por ``corpus_eligibility``
+    -- ver ``src/tools/thematic_analysis/corpus_filtering.py``) seguirían
+    incluyendo el paper con sus campos incompletos en la KB y en los
+    artefactos finales.
     """
 
     quality_by_source = {
@@ -180,6 +186,16 @@ def auto_quarantine_missing_critical_fields(
 
         if not already_flagged and missing:
             card[CORPUS_ELIGIBILITY_FIELD] = QUARANTINE
+            # corpus_eligibility=QUARANTINE por sí solo NO basta: 03B/04
+            # (y potencialmente 06) no leen ese campo -- filtran por
+            # include_in_state_of_art (ver src/tools/thematic_analysis/
+            # corpus_filtering.py), que la clasificación de relevancia ya
+            # puso en True ANTES de que este mecanismo corra (este hook
+            # se dispara al final del intento 2, después de relevancia).
+            # Sin apagar también este flag, el paper en cuarentena sigue
+            # colándose en scientific_knowledge_base y en
+            # comparative_table_papers.csv con sus campos incompletos.
+            card["include_in_state_of_art"] = False
             audit_rows.append({
                 "source_filename": source,
                 "reason": f"Campos críticos faltantes tras el intento final: {', '.join(missing)}.",
