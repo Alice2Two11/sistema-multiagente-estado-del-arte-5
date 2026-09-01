@@ -1628,8 +1628,21 @@ def validate_correction_proposal_contract(proposal: Mapping[str, Any]) -> dict[s
     if set(proposal) - set(names):
         raise ValueError("CORRECTION_PROPOSAL_UNKNOWN_FIELDS")
     v = dict(proposal)
-    for f in ("correction_id", "claim_id", "section_id", "original_text", "original_claim_fingerprint", "original_section_fingerprint", "target_text_fingerprint", "proposed_claim_text", "proposal_fingerprint", "prompt_version"):
+    for f in ("correction_id", "claim_id", "section_id", "original_text", "original_claim_fingerprint", "original_section_fingerprint", "target_text_fingerprint", "proposal_fingerprint", "prompt_version"):
         v[f] = _terminal_nonempty(v[f], f)
+    # proposed_claim_text NO pasa por _terminal_nonempty: ese helper hace
+    # .strip() y sobreescribe el valor -- correcto para campos de metadata
+    # (IDs, fingerprints) donde el espacio en blanco alrededor no tiene
+    # significado, pero proposed_claim_text es CONTENIDO que más abajo se
+    # compara carácter por carácter contra build_virtual_corrected_claim
+    # (splice mecánico, sin strip). Un REMOVE_UNSUPPORTED_FRAGMENT al final
+    # de la oración deja legítimamente un espacio/coma final en el texto
+    # reconstruido -- .strip() lo quitaba de un solo lado de la
+    # comparación y disparaba CORRECTION_PROPOSAL_PROPOSED_CLAIM_
+    # RECONSTRUCTION_MISMATCH incluso cuando la reconstrucción era
+    # correcta. Se valida "no vacío" sin mutar el valor.
+    if not isinstance(v["proposed_claim_text"], str) or not v["proposed_claim_text"].strip():
+        raise ValueError("TERMINAL_CONTRACT_INVALID:proposed_claim_text")
 
     if fingerprint_text(v["original_text"]) != v["original_claim_fingerprint"]:
         raise ValueError("CORRECTION_PROPOSAL_ORIGINAL_TEXT_FINGERPRINT_MISMATCH")
@@ -2227,6 +2240,38 @@ def _phase652_validate_independent_reverification_collection_item(value: Mapping
         REVERIFICATION_ACTION_ASSESSMENT_FIELD, get_verification_input_policy,
     )
     mapped = _phase652_plain_mapping(value)
+
+    if mapped.get("reverification_execution_status") != "COMPLETED":
+        # BLOCKED/FAILED nunca invocó al LLM de reverificación (ver
+        # run_independent_virtual_reverification: la rama temprana
+        # REVERIFICATION_PRECHECK_NOT_PASSED/dependency-unavailable/etc.
+        # nunca llama al LLM) -- por diseño, los 4 campos de assessment
+        # quedan legítimamente en NOT_APPLICABLE (el default de result()
+        # cuando data={}). La derivación de acción de más abajo asume una
+        # respuesta COMPLETED real con un assessment poblado; aplicarla
+        # aquí también hacía que TODO resultado BLOCKED/FAILED reventara
+        # con ACTION_ASSESSMENT_CONTEXT_UNRESOLVED, aunque sea un
+        # resultado terminal válido. El validador oficial ya reconoce
+        # este caso (líneas ~1011-1019: corta con REVERIFICATION_RESULT_
+        # NOT_COMPLETED antes de necesitar la acción) -- se delega
+        # directo, sin fabricar una acción que no existe.
+        try:
+            return validate_correction_independent_reverification_result_contract(
+                mapped,
+                context={
+                    "correction_id": mapped.get("correction_id"),
+                    "claim_id": mapped.get("claim_id"),
+                    "allowed_evidence_ids": tuple(mapped.get("evidence_ids_used") or ()),
+                    "target_issue_codes": tuple(mapped.get("target_issues_resolved_reported") or ()),
+                    "correction_action_type": None,
+                    "policy": get_verification_input_policy(),
+                },
+            )
+        except ValueError as exc:
+            if str(exc) == "REVERIFICATION_RESULT_NOT_COMPLETED":
+                return mapped
+            raise
+
     assessment_by_action = {field: action for action, field in REVERIFICATION_ACTION_ASSESSMENT_FIELD.items()}
     applicable_fields = [
         field for field in ("scope_assessment", "numeric_assessment", "attribution_assessment", "citation_assessment")
