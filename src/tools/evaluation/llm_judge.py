@@ -71,13 +71,16 @@ def build_judge_prompt(
     error_instruction = ""
     if previous_errors:
         error_instruction = (
-            "\nLa respuesta anterior fue inválida. Corrige estos errores:\n"
+            "\n>>> LA RESPUESTA ANTERIOR FUE INVÁLIDA -- corrige esto ANTES "
+            "de responder de nuevo (no repitas el mismo texto sin editarlo):\n"
             + json.dumps(previous_errors, ensure_ascii=False, indent=2)
+            + "\n"
         )
 
     return f"""
 Eres un evaluador académico. Compara un estado del arte generado
 contra una revisión de literatura real publicada.
+{error_instruction}
 
 TEMA:
 {topic_name}
@@ -93,8 +96,12 @@ REGLAS:
    4 = buena,
    5 = excelente.
 4. Cada puntuación debe incluir una justificación concreta.
-5. evidence_from_generated puede incluir hasta tres fragmentos breves,
-   cada uno de máximo 20 palabras.
+5. evidence_from_generated puede incluir hasta tres fragmentos breves --
+   NO tienen que ser citas textuales exactas del documento generado; son
+   paráfrasis cortas que señalan de qué parte del texto viene tu
+   evaluación. Cada uno debe tener máximo 20 palabras -- cuenta las
+   palabras antes de escribir cada fragmento y recórtalo si hace falta,
+   conservando el significado.
 6. missing_topics_or_omissions debe basarse en contenido visible
    en el Ground Truth y ausente o débil en el texto generado.
 7. No inventes papers, autores ni resultados.
@@ -156,7 +163,6 @@ FORMATO:
   ],
   "overall_assessment": ""
 }}
-{error_instruction}
 """.strip()
 
 
