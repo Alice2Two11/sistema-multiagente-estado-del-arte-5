@@ -279,7 +279,9 @@ def evidence_length_violations(
                     "message": (
                         f"{criterion}: evidence_from_generated[{index}] tiene "
                         f"{count} palabras; máximo permitido = {max_words}. "
-                        "Reformula ese elemento conservando su significado."
+                        f"Texto actual: \"{text}\". Reformula ESE elemento "
+                        "conservando su significado, recortándolo a "
+                        f"{max_words} palabras o menos."
                     ),
                 })
     return violations
