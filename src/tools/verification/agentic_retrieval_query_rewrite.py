@@ -346,8 +346,21 @@ def generate_query_rewrite(
         candidate_numbers_ranked_first |= _extract_numbers(str(candidate.get("text", "")))
 
     source_terms_used = tuple(t for t in selected_terms if not t.isdigit())
+    # Antes: filtraba selected_terms por .isdigit() -- un término
+    # alfanumérico (ej. "5G", "COVID19") no es .isdigit() puro, así que
+    # cualquier dígito incrustado en él quedaba SIN declarar aquí. Pero
+    # el validador (más abajo, y en validate_query_rewrite) recalcula
+    # rewritten_numbers con _extract_numbers() -- una regex \d+ sobre el
+    # STRING final -- que SÍ encuentra ese dígito incrustado como
+    # "número nuevo", disparando QueryRewriteError aunque el término ya
+    # estuviera correctamente registrado en source_terms_used. Se
+    # recalcula con la MISMA función (_extract_numbers) sobre el mismo
+    # texto que realmente se concatena a rewritten_query, para que
+    # ambos lados usen idéntica definición de "número".
+    introduced_text = " ".join(selected_terms)
+    numbers_in_selected_terms = _extract_numbers(introduced_text)
     source_numbers_used = tuple(
-        sorted({t for t in selected_terms if t.isdigit()} & (candidate_numbers_ranked_first - existing_numbers))
+        sorted(numbers_in_selected_terms & (candidate_numbers_ranked_first - existing_numbers))
     )
 
     result = {
