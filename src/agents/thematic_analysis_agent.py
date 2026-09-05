@@ -123,7 +123,7 @@ class ThematicAnalysisAgent:
             structure_too_short = (min_s is not None and sc < int(min_s))
             structure_too_long = (max_s is not None and sc > int(max_s))
 
-            # Si la cantidad de secciones es obligatoria, registra un error cuando queda por debajo o por encima del límite.
+            # registra un error cuando queda por debajo o por encima del límite.
             if enforce_section_count:
                 if structure_too_short:
                     codes.append("STRUCTURE_TOO_SHORT")
