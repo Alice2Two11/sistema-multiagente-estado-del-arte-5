@@ -145,24 +145,34 @@ class DraftWritingAgent:
     def _revision_reuse_plan(
         policy: Mapping[str, Any],
     ) -> tuple[bool, set[str], dict[str, list[Any]], dict[str, dict[str, Any]]]:
-        """Determina qué secciones pueden reutilizarse tal cual en una
-        ronda de revisión pedida por 07, en vez de regenerarse con el
-        LLM.
-
-        Devuelve ``(is_revision_mode, affected_section_ids,
-        issues_by_section, previous_sections_by_id)``.
-
-        Solo activa el modo revisión si ``policy["mode"] == "REVISION"``
-        Y existen AMBOS artefactos reales (``writer_revision_request``,
-        ``previous_draft``) -- nunca infiere una ronda de revisión de
-        forma implícita. Una sección solo se considera reutilizable si
-        su ``section_id`` NO aparece entre los ``issues`` del
-        ``writer_revision_request`` (07 no la marcó como corregible) Y
-        SÍ existe una versión real de ella en ``previous_draft`` -- si
-        falta cualquiera de las dos condiciones, la sección se regenera
-        normalmente (nunca se reutiliza sin datos reales que lo
-        respalden)."""
-
+        """Decide, al empezar una ronda de revisión pedida por 07, cuáles
+        secciones del borrador anterior se pueden reutilizar tal cual (sin
+        volver a llamar al LLM) y cuáles hay que regenerar.
+        
+        Devuelve una tupla con 4 elementos:
+            - is_revision_mode: si esta corrida es realmente una ronda de
+              revisión.
+            - affected_section_ids: los section_id que 07 marcó como
+              corregibles.
+            - issues_by_section: el detalle de esos problemas, agrupado por
+              sección.
+            - previous_sections_by_id: el contenido del borrador anterior,
+              también agrupado por sección.
+        
+        El modo revisión solo se activa si se cumplen las dos condiciones a
+        la vez: la política dice explícitamente "REVISION" Y existen los dos
+        archivos reales que lo confirman (la solicitud de revisión de 07 y el
+        borrador anterior). Nunca se asume un modo revisión por indicios
+        indirectos.
+        
+        Una sección se reutiliza sin regenerar solo si se cumplen, también las
+        dos, estas condiciones: 07 no la señaló como corregible (su
+        section_id no aparece en los issues) Y existe una versión real de
+        ella en el borrador anterior. Si falta cualquiera de las dos, la
+        sección se regenera de cero — nunca se reutiliza a ciegas, sin datos
+        reales que lo justifiquen.
+        """
+        
         revision_request = policy.get("writer_revision_request")
         previous_draft = policy.get("previous_draft")
         is_revision_mode = bool(
