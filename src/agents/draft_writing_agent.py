@@ -102,7 +102,6 @@ class DraftWritingAgent:
         }
 
     # prepara los datos numéricos y de datasets que el redactor puede usar en una sección, 
-    # pero únicamente de los papers asignados a esa sección.
     def _quant_context(
         self,
         section: Mapping[str, Any],
