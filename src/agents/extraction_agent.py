@@ -137,6 +137,15 @@ from src.tools.extraction.corpus_eligibility import (
     is_corpus_include,
     is_corpus_quarantined,
 )
+from src.tools.extraction.attempt_pipelines import (
+    run_first_attempt_pipeline,
+    run_second_attempt_pipeline,
+)
+from src.tools.extraction.final_phases import (
+    handle_execution_error,
+    run_final_eligibility_and_kb,
+    run_title_repair_and_relevance_reclassification,
+)
 
 
 EXPECTED_STAGE_NAME = "03_agente_extraccion_kb"
@@ -687,338 +696,71 @@ class ExtractionAgent:
                     )
 
                 if agent_input.is_first_attempt():
-                    source_filenames = sorted(
-                        str(value)
-                        for value in df_chunks_clean["source_filename"].unique()
-                    )
-                    # Ejecuta la extracción inicial de fichas científicas para todos los papers
-                    # y registra las fichas, trazas de recuperación, errores y llamadas realizadas.
-                    extraction_created_at = self.dependencies.now_factory()
-                    initial_result = self.dependencies.run_initial(
-                        source_filenames,
+                    result_or_state = run_first_attempt_pipeline(
+                        dependencies=self.dependencies,
+                        quality_row_fn=self._quality_row,
+                        collect_artifacts_fn=self._collect_output_artifacts,
+                        card_json_parser=card_json_parser,
                         retrieve=retrieve,
-                        build_context=build_context_from_chunks,
-                        prompt_builder=self.dependencies.extraction_prompt_builder,
-                        experiment_profile=signature_policy["experiment_profile"],
-                        llm=self.dependencies.main_llm,
-                        json_parser=card_json_parser,
-                        message_factory=self.dependencies.message_factory,
-                        max_chunks_per_paper=int(
-                            retrieval_policy["max_chunks_per_paper"]
-                        ),
-                        max_context_chars=int(
-                            retrieval_policy["max_context_chars"]
-                        ),
-                        created_at=extraction_created_at,
-                    )
-                    cards = list(initial_result["cards"])
-                    retrieval_trace_rows = list(
-                        initial_result["retrieval_trace_rows"]
-                    )
-                    extraction_errors = list(initial_result["extraction_errors"])
-                    initial_calls = int(initial_result["llm_calls"])
-                    llm_calls += initial_calls
-                    retrieval_rounds += len(source_filenames)
-
-                    # Repara títulos faltantes o incorrectos después de la extracción inicial
-                    # y actualiza las fichas, los errores y el número de llamadas al LLM.
-                    title_result_initial = self.dependencies.run_title_repair(
-                        cards,
                         df_chunks_clean=df_chunks_clean,
-                        title_repair_first_chunks=int(
-                            policy["title_repair_first_chunks"]
-                        ),
-                        repair_llm=self.dependencies.repair_llm,
-                        json_parser=self.dependencies.json_parser,
-                        should_rebuild_extraction=True,
-                        message_factory=self.dependencies.message_factory,
-                        created_at=self.dependencies.now_factory(),
-                        extraction_errors=extraction_errors,
+                        metrics=metrics,
+                        paths=paths,
+                        policy=policy,
+                        quarantine_audit_rows=quarantine_audit_rows,
+                        retrieval_policy=retrieval_policy,
+                        review_exclusion_audit_rows=review_exclusion_audit_rows,
+                        signature_policy=signature_policy,
+                        started_at=started_at,
+                        validation_calls=validation_calls,
+                        warnings=warnings,
+                        llm_calls=llm_calls,
+                        retrieval_rounds=retrieval_rounds,
                     )
-                    cards = title_result_initial["cards"]
-                    extraction_errors = title_result_initial["extraction_errors"]
-                    title_calls_initial = int(title_result_initial["llm_calls"])
-                    llm_calls += title_calls_initial
-
-                    # Exclusión determinista y auditable de reviews
-                    exclusion_policy = dict(
-                        signature_policy.get("extraction_policy", {})
-                    )
-                    
-                    # Aplica la política de exclusión de papers de revisión,
-                    # actualiza las fichas y registra en la auditoría cuáles fueron excluidos.
-                    exclusion_result_initial = apply_review_exclusion_policy(
-                        cards,
-                        exclude_reviews=bool(exclusion_policy.get("exclude_reviews", True)),
-                        created_at=self.dependencies.now_factory(),
-                    )
-                    cards = exclusion_result_initial["cards"]
-                    review_exclusion_audit_rows.extend(
-                        exclusion_result_initial["audit_rows"]
-                    )
-
-                    # Aplica una preclasificación documental para marcar papers que deben
-                    # incluirse, excluirse o enviarse a cuarentena antes del control de calidad científico.
-                    pre_eligibility_result = apply_pre_eligibility_policy(
-                        cards, created_at=self.dependencies.now_factory(),
-                    )
-                    cards = pre_eligibility_result["cards"]
-                    quarantine_audit_rows.extend(
-                        pre_eligibility_result["quarantine_audit_rows"]
-                    )
-
-                    # Construye el plan de revisión y los reportes de las fichas extraídas,
-                    # guarda los resultados de la etapa.
-                    revision_rows = build_revision_plan(
-                        cards,
-                        extraction_errors,
-                        retrieval_trace_rows,
-                    )
-                    summary_rows = [build_summary_row(card) for card in cards]
-                    quality_rows = [self._quality_row(card) for card in cards]
-                    self.dependencies.save_jsonl(cards, paths["CARDS_JSONL_PATH"])
-                    self.dependencies.save_dataframe(
-                        pd.DataFrame(summary_rows, columns=SUMMARY_COLUMNS),
-                        paths["CARDS_SUMMARY_CSV_PATH"],
-                    )
-                    self.dependencies.save_dataframe(
-                        pd.DataFrame(quality_rows, columns=QUALITY_COLUMNS),
-                        paths["CARDS_QUALITY_CSV_PATH"],
-                    )
-                    self.dependencies.save_dataframe(
-                        pd.DataFrame(revision_rows, columns=REVISION_PLAN_COLUMNS),
-                        paths["CARDS_REVISION_PLAN_CSV_PATH"],
-                    )
-                    save_dataframe_even_if_empty(
-                        extraction_errors,
-                        paths["CARDS_ERRORS_CSV_PATH"],
-                        policy["error_columns"],
-                    )
-                    save_dataframe_even_if_empty(
-                        retrieval_trace_rows,
-                        paths["RETRIEVAL_TRACE_CSV_PATH"],
-                        policy["trace_columns"],
-                    )
-                    metrics["scientific"].update({
-                        "num_cards": len(cards),
-                        "num_trace_rows": len(retrieval_trace_rows),
-                        "num_extraction_errors": len(extraction_errors),
-                        "num_titles_selected_for_repair": len(
-                            title_result_initial["missing_title_cards"]
-                        ),
-                        "num_title_llm_calls": title_calls_initial,
-                        "num_revision_plan_rows": len(revision_rows),
-                    })
-
-                    # Si existen fichas que requieren revisión, identifica la causa principal,
-                    # clasifica el problema y solicita un único reintento de la etapa.
-                    if revision_rows:
-                        reason_codes = tuple(dict.fromkeys(
-                            str(row["primary_reason_code"])
-                            for row in revision_rows
-                        ))
-                        if any(
-                            code in {
-                                "INVALID_LLM_OUTPUT",
-                                "INVALID_CARD_SCHEMA",
-                                "MISSING_OR_INVALID_TITLE",
-                                "MISSING_CRITICAL_FIELDS",
-                            }
-                            for code in reason_codes
-                        ):
-                            quality_status = QualityStatus.NEEDS_REVISION
-                        else:
-                            quality_status = QualityStatus.NEEDS_MORE_EVIDENCE
-                        completed_at = self.dependencies.now_factory()
-                        return AgentResult(
-                            execution_status=ExecutionStatus.COMPLETED,
-                            quality_status=quality_status,
-                            decision=DecisionInfo(
-                                code=quality_status.value,
-                                rationale=(
-                                    "El intento 1 generó un plan de revisión por ficha; "
-                                    "se solicita una única transacción con attempt_number=2."
-                                ),
-                            ),
-                            quality_metrics=metrics,
-                            warnings=tuple(warnings),
-                            failure_reason_codes=reason_codes,
-                            requested_transition=RequestedTransition(
-                                action=TransitionAction.RETRY,
-                                target_stage=None,
-                                reason_code=quality_status.value,
-                                requires_human_confirmation=False,
-                            ),
-                            output_artifacts=self._collect_output_artifacts(paths),
-                            tool_usage=ToolUsage(
-                                retrieval_rounds=retrieval_rounds,
-                                llm_calls=llm_calls,
-                                validation_calls=validation_calls,
-                            ),
-                            attempt_number=1,
-                            started_at=started_at,
-                            completed_at=completed_at,
-                            error=None,
-                        )
-
-                    # Prepara el segundo intento: reinicia los contadores de reparación y,
-                    # si corresponde, recupera las fichas, errores y trazas generados en el intento 1.
-                    bad_after_repair = []
-                    repair_calls = 0
+                    # El intento 1 puede terminar en una transición RETRY
+                    # anticipada -- si eso pasó, se propaga tal cual (mismo
+                    # comportamiento que antes, cuando el "return" vivía
+                    # inline dentro de este mismo método).
+                    if isinstance(result_or_state, AgentResult):
+                        return result_or_state
+                    cards = result_or_state["cards"]
+                    extraction_errors = result_or_state["extraction_errors"]
+                    retrieval_trace_rows = result_or_state["retrieval_trace_rows"]
+                    llm_calls = result_or_state["llm_calls"]
+                    retrieval_rounds = result_or_state["retrieval_rounds"]
+                    initial_calls = result_or_state["initial_calls"]
+                    bad_after_repair = result_or_state["bad_after_repair"]
+                    repair_calls = result_or_state["repair_calls"]
+                    metrics = result_or_state["metrics"]
+                    quarantine_audit_rows = result_or_state["quarantine_audit_rows"]
+                    review_exclusion_audit_rows = result_or_state["review_exclusion_audit_rows"]
                 else:
-                    if previous_cards_for_attempt2 is None:
-                        raise ValueError(
-                            "El intento 2 no recibió fichas preliminares del intento 1."
-                        )
-                    cards = [dict(card) for card in previous_cards_for_attempt2]
-                    extraction_errors = list(previous_errors_for_attempt2)
-                    retrieval_trace_rows = list(previous_trace_for_attempt2)
-
-                    # Reaplica la preclasificación documental al inicio del intento 2
-                    # para asegurar que ninguna ficha no elegible bloquee la revisión científica.
-                    pre_eligibility_result_attempt2 = apply_pre_eligibility_policy(
-                        cards, created_at=self.dependencies.now_factory(),
+                    result_state = run_second_attempt_pipeline(
+                        dependencies=self.dependencies,
+                        card_json_parser=card_json_parser,
+                        retrieve=retrieve,
+                        df_chunks_clean=df_chunks_clean,
+                        metrics=metrics,
+                        paths=paths,
+                        policy=policy,
+                        previous_cards_for_attempt2=previous_cards_for_attempt2,
+                        previous_errors_for_attempt2=previous_errors_for_attempt2,
+                        previous_trace_for_attempt2=previous_trace_for_attempt2,
+                        quarantine_audit_rows=quarantine_audit_rows,
+                        retrieval_policy=retrieval_policy,
+                        signature_policy=signature_policy,
+                        llm_calls=llm_calls,
+                        retrieval_rounds=retrieval_rounds,
                     )
-                    cards = pre_eligibility_result_attempt2["cards"]
-                    quarantine_audit_rows.extend(
-                        pre_eligibility_result_attempt2["quarantine_audit_rows"]
-                    )
-
-                    # Construye el plan de revisión del intento 2, organiza las correcciones
-                    # por paper y guarda el plan actualizado para continuar con la reparación.
-                    revision_rows = build_revision_plan(
-                        cards,
-                        extraction_errors,
-                        retrieval_trace_rows,
-                    )
-                    revisions = plan_by_source(revision_rows)
-                    self.dependencies.save_dataframe(
-                        pd.DataFrame(revision_rows, columns=REVISION_PLAN_COLUMNS),
-                        paths["CARDS_REVISION_PLAN_CSV_PATH"],
-                    )
-
-                    # Title-only repairs preserve every scientific field.
-                    title_sources = {
-                        source
-                        for source, row in revisions.items()
-                        if row["recommended_strategy"] == "REPAIR_TITLE_ONLY"
-                    }
-                    title_cards = [
-                        card for card in cards
-                        if str(card.get("source_filename", "")) in title_sources
-                    ]
-                    if title_cards:
-                        title_result_attempt2 = self.dependencies.run_title_repair(
-                            title_cards,
-                            df_chunks_clean=df_chunks_clean,
-                            title_repair_first_chunks=int(
-                                policy["title_repair_first_chunks"]
-                            ),
-                            repair_llm=self.dependencies.repair_llm,
-                            json_parser=self.dependencies.json_parser,
-                            should_rebuild_extraction=True,
-                            message_factory=self.dependencies.message_factory,
-                            created_at=self.dependencies.now_factory(),
-                            extraction_errors=extraction_errors,
-                        )
-                        extraction_errors = title_result_attempt2["extraction_errors"]
-                        title_calls = int(title_result_attempt2["llm_calls"])
-                        llm_calls += title_calls
-                    else:
-                        title_calls = 0
-
-                    # Ejecuta las reparaciones dirigidas del intento 2 según el problema de cada paper,
-                    # amplía la evidencia cuando hace falta y actualiza fichas, trazas, errores y métricas.
-                    repaired_sources: set[str] = set()
-                    repair_calls = 0
-                    by_source = {
-                        str(card.get("source_filename", "")): index
-                        for index, card in enumerate(cards)
-                    }
-                    for source, row in revisions.items():
-                        strategy = str(row["recommended_strategy"])
-                        if strategy == "REPAIR_TITLE_ONLY":
-                            continue
-                        max_chunks = int(
-                            retrieval_policy["max_chunks_per_paper"]
-                        )
-                        max_chars = int(retrieval_policy["max_context_chars"])
-                        if strategy in {
-                            "REPAIR_SCHEMA_EXPANDED_EVIDENCE",
-                            "EXPAND_EVIDENCE",
-                        }:
-                            max_chunks = int(
-                                retrieval_policy["repair_max_chunks_per_paper"]
-                            )
-                            max_chars = int(
-                                retrieval_policy["repair_max_context_chars"]
-                            )
-                        try:
-                            repaired_card, _raw, trace_rows = (
-                                generate_repaired_card_for_source(
-                                    source,
-                                    retrieve=retrieve,
-                                    build_context=build_context_from_chunks,
-                                    prompt_builder=self.dependencies.extraction_prompt_builder,
-                                    experiment_profile=signature_policy[
-                                        "experiment_profile"
-                                    ],
-                                    repair_llm=self.dependencies.repair_llm,
-                                    json_parser=card_json_parser,
-                                    message_factory=self.dependencies.message_factory,
-                                    repair_max_chunks_per_paper=max_chunks,
-                                    repair_max_context_chars=max_chars,
-                                )
-                            )
-                            repair_calls += 1
-                            retrieval_rounds += 1
-                            retrieval_trace_rows.extend(trace_rows)
-                            cards[by_source[source]] = repaired_card
-                            repaired_sources.add(source)
-                        except Exception as error:
-                            repair_calls += 1
-                            extraction_errors.append({
-                                "source_filename": source,
-                                "stage": "directed_attempt_2",
-                                "error_type": type(error).__name__,
-                                "error_message": str(error),
-                                "created_at": self.dependencies.now_factory(),
-                            })
-                    llm_calls += repair_calls
-                    extraction_errors = [
-                        row for row in extraction_errors
-                        if not (
-                            str(row.get("source_filename", "")) in repaired_sources
-                            and str(row.get("stage", "")) == "initial_extraction"
-                        )
-                    ]
-                    # Verifica qué fichas siguen siendo inválidas después de la reparación,
-                    # guarda los resultados finales y actualiza las métricas del intento 2.
-                    bad_after_repair = [
-                        str(card.get("source_filename", ""))
-                        for card in cards
-                        if is_bad_card(card)
-                    ]
-                    self.dependencies.save_jsonl(cards, paths["CARDS_JSONL_PATH"])
-                    save_dataframe_even_if_empty(
-                        extraction_errors,
-                        paths["CARDS_ERRORS_CSV_PATH"],
-                        policy["error_columns"],
-                    )
-                    save_dataframe_even_if_empty(
-                        retrieval_trace_rows,
-                        paths["RETRIEVAL_TRACE_CSV_PATH"],
-                        policy["trace_columns"],
-                    )
-                    metrics["scientific"].update({
-                        "num_cards": len(cards),
-                        "num_trace_rows": len(retrieval_trace_rows),
-                        "num_extraction_errors": len(extraction_errors),
-                        "num_bad_cards_after_repair": len(bad_after_repair),
-                        "num_title_llm_calls": title_calls,
-                        "num_directed_repair_calls": repair_calls,
-                        "num_revision_plan_rows": len(revision_rows),
-                    })
+                    cards = result_state["cards"]
+                    extraction_errors = result_state["extraction_errors"]
+                    retrieval_trace_rows = result_state["retrieval_trace_rows"]
+                    llm_calls = result_state["llm_calls"]
+                    retrieval_rounds = result_state["retrieval_rounds"]
+                    bad_after_repair = result_state["bad_after_repair"]
+                    repair_calls = result_state["repair_calls"]
+                    metrics = result_state["metrics"]
+                    quarantine_audit_rows = result_state["quarantine_audit_rows"]
+                    title_calls = result_state["title_calls"]
            
             # Si el agente NO necesita volver a hacer la extracción desde cero, reutiliza las fichas, trazas y errores
             # ya guardados en disco y reinicia los indicadores para las validaciones siguientes.
@@ -1051,301 +793,48 @@ class ExtractionAgent:
                     )
                 )
 
-            title_selected = 0
-            title_calls = 0
-            cards_need_classification = False
-
-            # Revisa y repara nuevamente los títulos de las fichas, actualiza los errores
-            # y registra cuántas fichas necesitaron reparación y cuántas llamadas al LLM se usaron.
-            title_result = (
-                self.dependencies.run_title_repair(
-                    cards,
-                    df_chunks_clean=df_chunks_clean,
-                    title_repair_first_chunks=int(
-                        policy[
-                            "title_repair_first_chunks"
-                        ]
-                    ),
-                    repair_llm=self.dependencies.repair_llm,
-                    json_parser=self.dependencies.json_parser,
-                    should_rebuild_extraction=should_rebuild,
-                    message_factory=(
-                        self.dependencies.message_factory
-                    ),
-                    created_at=(
-                        self.dependencies.now_factory()
-                    ),
-                    extraction_errors=(
-                        extraction_errors
-                    ),
-                )
+            block2_state = run_title_repair_and_relevance_reclassification(
+                dependencies=self.dependencies,
+                validate_classification_dependencies_fn=self._validate_classification_dependencies,
+                agent_input=agent_input,
+                df_chunks_clean=df_chunks_clean,
+                metrics=metrics,
+                paths=paths,
+                policy=policy,
+                should_rebuild=should_rebuild,
+                signature_policy=signature_policy,
+                cards=cards,
+                extraction_errors=extraction_errors,
+                llm_calls=llm_calls,
+                backup_dir_created=backup_dir_created,
             )
-            cards = title_result["cards"]
-            extraction_errors = (
-                title_result[
-                    "extraction_errors"
-                ]
+            cards = block2_state["cards"]
+            extraction_errors = block2_state["extraction_errors"]
+            llm_calls = block2_state["llm_calls"]
+            metrics = block2_state["metrics"]
+            backup_dir_created = block2_state["backup_dir_created"]
+            kb_should_recreate = block2_state["kb_should_recreate"]
+            title_selected = block2_state["title_selected"]
+            title_calls = block2_state["title_calls"]
+            classification_calls = block2_state["classification_calls"]
+            cards_need_classification = block2_state["cards_need_classification"]
+            block3_state = run_final_eligibility_and_kb(
+                dependencies=self.dependencies,
+                paths=paths,
+                signature_policy=signature_policy,
+                cards=cards,
+                kb_should_recreate=kb_should_recreate,
+                quarantine_audit_rows=quarantine_audit_rows,
+                review_exclusion_audit_rows=review_exclusion_audit_rows,
             )
-            title_selected = len(
-                title_result[
-                    "missing_title_cards"
-                ]
-            )
-            title_calls = int(
-                title_result["llm_calls"]
-            )
-            llm_calls += title_calls
-            metrics["scientific"].update({
-                "num_cards": int(
-                    len(cards)
-                ),
-                "num_extraction_errors": int(
-                    len(extraction_errors)
-                ),
-                "num_titles_selected_for_repair": int(
-                    title_selected
-                ),
-                "num_title_llm_calls": int(
-                    title_calls
-                ),
-            })
-
-            # Guarda las fichas si hubo reparaciones de título y determina
-            # si deben volver a clasificarse por relevancia.
-            if title_result["repair_titles"]:
-                self.dependencies.save_jsonl(
-                    cards,
-                    paths["CARDS_JSONL_PATH"],
-                )
-                save_dataframe_even_if_empty(
-                    extraction_errors,
-                    paths[
-                        "CARDS_ERRORS_CSV_PATH"
-                    ],
-                    policy["error_columns"],
-                )
-
-            (
-                cards_need_classification,
-                reclassify_relevance,
-            ) = determine_relevance_reclassification(
-                cards,
-                should_rebuild_extraction=(
-                    should_rebuild
-                ),
-            )
-            metrics["scientific"][
-                "cards_need_classification"
-            ] = bool(
-                cards_need_classification
-            )
-
-            # Si las fichas necesitan reclasificarse y no se está reconstruyendo toda la etapa,
-            # crea un respaldo de los resultados existentes antes de modificarlos.           
-            if (
-                reclassify_relevance
-                and not should_rebuild
-            ):
-                tracked_outputs = [
-                    paths[key]
-                    for key in TRACKED_STAGE_OUTPUT_KEYS
-                ]
-                if any_stage_outputs_exist(
-                    tracked_outputs
-                ):
-                    backup_dir_created = backup_stage_outputs(
-                        outputs_dir=paths["OUTPUTS_DIR"],
-                        dir_extraction=paths[
-                            "DIR_EXTRACTION"
-                        ],
-                        dir_kb=paths["DIR_KB"],
-                        experiment_id=agent_input.experiment_id,
-                        reason=(
-                            "auto_reclassify_missing_fields"
-                        ),
-                    )
-                    metrics["technical"][
-                        "backup_created"
-                    ] = True
-
-            # Inicializa los contadores de clasificación y determina si la base de conocimiento
-            # debe recrearse; si hay que reclasificar relevancia, valida sus dependencias.
-            classification_calls = 0
-            kb_should_recreate = bool(
-                should_rebuild
-            )
-            if reclassify_relevance:
-                self._validate_classification_dependencies()
-
-                # Define una función que clasifica la relevancia de una ficha científica
-                # usando el perfil del experimento, el prompt configurado y el LLM principal.
-                def classify(
-                    card: dict[str, Any],
-                ) -> Any:
-                    return classify_card_relevance(
-                        card,
-                        experiment_profile=signature_policy[
-                            "experiment_profile"
-                        ],
-                        prompt_builder=(
-                            self.dependencies.relevance_prompt_builder
-                        ),
-                        llm=self.dependencies.main_llm,
-                        json_parser=(
-                            self.dependencies.json_parser
-                        ),
-                        message_factory=(
-                            self.dependencies.message_factory
-                        ),
-                    )
-
-                relevance_result = (
-                    self.dependencies.run_relevance(
-                        [c for c in cards if not is_review_excluded(c) and not is_corpus_quarantined(c)],
-                        should_rebuild_extraction=(
-                            should_rebuild
-                        ),
-                        classify=classify,
-                        created_at=(
-                            self.dependencies.now_factory()
-                        ),
-                    )
-                )
-                
-                # Conserva intactas las fichas ya excluidas o en cuarentena, integra la
-                # clasificación de relevancia del resto y actualiza errores, métricas y la KB.
-                classified_by_source = {
-                    str(c.get("source_filename", "")): c
-                    for c in relevance_result["cards"]
-                }
-                cards = [
-                    card if (is_review_excluded(card) or is_corpus_quarantined(card))
-                    else classified_by_source.get(str(card.get("source_filename", "")), card)
-                    for card in cards
-                ]
-                extraction_errors.extend(
-                    relevance_result["errors"]
-                )
-                classification_calls = int(
-                    relevance_result[
-                        "classification_calls"
-                    ]
-                )
-                llm_calls += classification_calls
-                metrics["scientific"].update({
-                    "num_cards": int(
-                        len(cards)
-                    ),
-                    "num_extraction_errors": int(
-                        len(extraction_errors)
-                    ),
-                    "num_classification_calls": int(
-                        classification_calls
-                    ),
-                })
-                kb_should_recreate = bool(
-                    relevance_result[
-                        "kb_should_recreate"
-                    ]
-                    or should_rebuild
-                )
-                self.dependencies.save_jsonl(
-                    cards,
-                    paths["CARDS_JSONL_PATH"],
-                )
-                save_dataframe_even_if_empty(
-                    extraction_errors,
-                    paths[
-                        "CARDS_ERRORS_CSV_PATH"
-                    ],
-                    policy["error_columns"],
-                )
-
-            # Aplica por última vez la exclusión determinista de papers de revisión,
-            # guarda las fichas finales y marca que la KB debe recrearse si hubo exclusiones.
-            exclusion_policy_final = dict(
-                signature_policy.get("extraction_policy", {})
-            )
-            exclusion_result_final = apply_review_exclusion_policy(
-                cards,
-                exclude_reviews=bool(exclusion_policy_final.get("exclude_reviews", True)),
-                created_at=self.dependencies.now_factory(),
-            )
-            cards = exclusion_result_final["cards"]
-            review_exclusion_audit_rows.extend(
-                exclusion_result_final["audit_rows"]
-            )
-            if exclusion_result_final["num_excluded"]:
-                kb_should_recreate = True
-                self.dependencies.save_jsonl(
-                    cards,
-                    paths["CARDS_JSONL_PATH"],
-                )
-
-            # Aplica la clasificación final de elegibilidad del corpus y asigna a cada
-            # ficha un estado canónico: INCLUDE, EXCLUDE o QUARANTINE.
-            eligibility_result = apply_corpus_eligibility_policy(
-                cards, created_at=self.dependencies.now_factory(),
-            )
-            cards = eligibility_result["cards"]
-            corpus_eligibility_counts = eligibility_result["counts"]
-            quarantine_audit_rows.extend(
-                eligibility_result["quarantine_audit_rows"]
-            )
-            if eligibility_result["quarantine_audit_rows"]:
-                kb_should_recreate = True
-                
-            # Guarda siempre las fichas con su estado final de elegibilidad
-            # y reutiliza la KB existente solo si está completa y no necesita reconstruirse.
-            self.dependencies.save_jsonl(
-                cards,
-                paths["CARDS_JSONL_PATH"],
-            )
-            kb_csv_exists = Path(
-                paths["KB_CSV_PATH"]
-            ).exists()
-            kb_jsonl_exists = Path(
-                paths["KB_JSONL_PATH"]
-            ).exists()
-            existing_kb_dataframe = None
-            if (
-                kb_csv_exists
-                and kb_jsonl_exists
-                and not kb_should_recreate
-            ):
-                existing_kb_dataframe = (
-                    self.dependencies.load_dataframe(
-                        paths["KB_CSV_PATH"]
-                    )
-                )
-                
-            # Ejecuta la construcción o reutilización de la Knowledge Base y,
-            # si fue creada nuevamente, guarda sus versiones CSV y JSONL.
-            (
-                kb_status,
-                df_kb,
-                kb_rows,
-            ) = self.dependencies.execute_kb(
-                cards,
-                kb_csv_exists=kb_csv_exists,
-                kb_jsonl_exists=kb_jsonl_exists,
-                kb_should_recreate=(
-                    kb_should_recreate
-                ),
-                existing_csv_dataframe=(
-                    existing_kb_dataframe
-                ),
-            )
-            if kb_status == "created":
-                self.dependencies.save_dataframe(
-                    df_kb,
-                    paths["KB_CSV_PATH"],
-                )
-                self.dependencies.save_jsonl(
-                    kb_rows or [],
-                    paths["KB_JSONL_PATH"],
-                )
-
+            cards = block3_state["cards"]
+            kb_should_recreate = block3_state["kb_should_recreate"]
+            corpus_eligibility_counts = block3_state["corpus_eligibility_counts"]
+            quarantine_audit_rows = block3_state["quarantine_audit_rows"]
+            review_exclusion_audit_rows = block3_state["review_exclusion_audit_rows"]
+            kb_status = block3_state["kb_status"]
+            df_kb = block3_state["df_kb"]
+            kb_rows = block3_state["kb_rows"]
             # Actualiza las métricas científicas finales de la etapa de extracción
             # con los conteos de fichas, KB, errores, reparaciones y clasificaciones.
             metrics["scientific"].update({
@@ -1781,99 +1270,20 @@ class ExtractionAgent:
         # Si ocurre un error inesperado, registra la hora de finalización
         # e intenta recuperar los artefactos que ya se alcanzaron a generar.
         except Exception as error:
-            completed_at = (
-                self.dependencies.now_factory()
-            )
-            try:
-                policy = dict(
-                    agent_input.policy
-                )
-                paths = self._resolve_paths(
-                    policy
-                )
-                output_artifacts = (
-                    self._collect_output_artifacts(
-                        paths
-                    )
-                )
-            except Exception:
-                output_artifacts = {}
-
-            failure_reason_codes = self._technical_failure_reason_codes(error)
-            safe_message = self._sanitize_error_message(error)
-            warnings.append(
-                AgentWarning(
-                    code=failure_reason_codes[0],
-                    severity=(
-                        WarningSeverity.ERROR
-                    ),
-                    blocking=True,
-                    message=safe_message,
-                )
-            )
-            metrics["technical"][
-                "artifact_count"
-            ] = len(output_artifacts)
-
-            # Si la etapa falla, devuelve un resultado de error al orquestador,
-            # registra el problema y solicita detener el Agente 03.
-            return AgentResult(
-                execution_status=(
-                    ExecutionStatus.FAILED
-                ),
-                quality_status=(
-                    QualityStatus.REJECTED
-                ),
-                decision=DecisionInfo(
-                    code="EXTRACTION_FAILED",
-                    rationale=(
-                        "La etapa 03 no completó "
-                        "su coordinación."
-                    ),
-                ),
-                quality_metrics=metrics,
-                warnings=tuple(warnings),
-                failure_reason_codes=failure_reason_codes,
-                requested_transition=(
-                    RequestedTransition(
-                        action=(
-                            TransitionAction.HALT_STAGE
-                        ),
-                        target_stage=None,
-                        reason_code=(
-                            "EXTRACTION_FAILED"
-                        ),
-                        requires_human_confirmation=(
-                            False
-                        ),
-                    )
-                ),
-                output_artifacts=(
-                    output_artifacts
-                ),
-                tool_usage=ToolUsage(
-                    retrieval_rounds=(
-                        retrieval_rounds
-                    ),
-                    llm_calls=llm_calls,
-                    validation_calls=(
-                        validation_calls
-                    ),
-                ),
-                attempt_number=(
-                    agent_input.attempt_number
-                ),
+            return handle_execution_error(
+                error,
+                agent_input=agent_input,
+                dependencies=self.dependencies,
+                resolve_paths_fn=self._resolve_paths,
+                collect_artifacts_fn=self._collect_output_artifacts,
+                technical_failure_reason_codes_fn=self._technical_failure_reason_codes,
+                sanitize_error_message_fn=self._sanitize_error_message,
+                metrics=metrics,
+                warnings=warnings,
+                llm_calls=llm_calls,
+                retrieval_rounds=retrieval_rounds,
+                validation_calls=validation_calls,
                 started_at=started_at,
-                completed_at=completed_at,
-                error={
-                    "type": (
-                        type(error).__name__
-                    ),
-                    "message": safe_message,
-                    "stage": (
-                        EXPECTED_STAGE_NAME
-                    ),
-                },
             )
 
     # Construye la fila de calidad de una ficha, identifica qué campos críticos
