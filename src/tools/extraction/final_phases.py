@@ -408,6 +408,7 @@ def run_title_repair_and_relevance_reclassification(
         "title_calls": title_calls,
         "classification_calls": classification_calls,
         "cards_need_classification": cards_need_classification,
+        "reclassify_relevance": reclassify_relevance,
     }
 
 
@@ -519,4 +520,5 @@ def run_final_eligibility_and_kb(
         "kb_status": kb_status,
         "df_kb": df_kb,
         "kb_rows": kb_rows,
+        "exclusion_policy_final": exclusion_policy_final,
     }

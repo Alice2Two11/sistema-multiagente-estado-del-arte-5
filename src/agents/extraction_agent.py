@@ -818,6 +818,7 @@ class ExtractionAgent:
             title_calls = block2_state["title_calls"]
             classification_calls = block2_state["classification_calls"]
             cards_need_classification = block2_state["cards_need_classification"]
+            reclassify_relevance = block2_state["reclassify_relevance"]
             block3_state = run_final_eligibility_and_kb(
                 dependencies=self.dependencies,
                 paths=paths,
@@ -835,6 +836,7 @@ class ExtractionAgent:
             kb_status = block3_state["kb_status"]
             df_kb = block3_state["df_kb"]
             kb_rows = block3_state["kb_rows"]
+            exclusion_policy_final = block3_state["exclusion_policy_final"]
             # Actualiza las métricas científicas finales de la etapa de extracción
             # con los conteos de fichas, KB, errores, reparaciones y clasificaciones.
             metrics["scientific"].update({
