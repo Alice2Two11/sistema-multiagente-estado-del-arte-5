@@ -666,18 +666,6 @@ AGENTIC_TRANSITION_INVALID = "AGENTIC_TRANSITION_INVALID"
 # herramienta puede no encontrar términos nuevos suficientes para generar una
 # reformulación real de la consulta.
 class AgenticRetrievalActionUnavailable(Exception):
-    """E2E-BUG-01 (contract fix): excepción tipada de integración -- la
-    acción seleccionada era legal según ``compute_allowed_actions`` para
-    la Observation actual, pero no puede ejecutarse con los datos
-    concretos disponibles (ej. ``generate_query_rewrite`` sin
-    vocabulario nuevo genuino que incorporar). NO significa fallo
-    técnico global, claim unsupported, presupuesto agotado, transición
-    inválida ni fallo del planner -- el executor (Bloque 4/runtime) es
-    responsable de traducir la condición legítima específica
-    (``QUERY_REWRITE_UNAVAILABLE``) a esta excepción; cualquier otro
-    error debe seguir propagándose sin conversión."""
-
-
 EXECUTION_STATUS_EXECUTED = "EXECUTED"
 EXECUTION_STATUS_ACTION_UNAVAILABLE = "ACTION_UNAVAILABLE"
 EXECUTION_STATUS_TERMINAL = "TERMINAL"
@@ -689,15 +677,6 @@ EXECUTION_STATUS_TERMINAL = "TERMINAL"
 def _validate_improvement_transition(
     *, action: str, before: AgenticRetrievalObservation, after: AgenticRetrievalObservation
 ) -> None:
-    """Fail-closed: para REWRITE_QUERY/ADJUST_TOP_K (las únicas
-    acciones que ejecuta una tool real vía execute_action_fn -- nunca
-    ACCEPT_EVIDENCE, que termina el ciclo antes de llegar aquí),
-    verifica que la Observation resultante cumpla exactamente el
-    contrato de esa acción -- incluidos los campos que NINGUNA acción
-    de mejora puede tocar (identidad del claim y el tope estructural
-    de top_k), no solo los que cada una sí modifica."""
-    # Invariantes compartidos: ninguna acción de mejora puede alterar
-    # la identidad del claim ni el tope estructural de top_k.
     if after.claim_id != before.claim_id:
         raise ValueError(
             f"{action}: claim_id_after ({after.claim_id!r}) debe ser igual a "
