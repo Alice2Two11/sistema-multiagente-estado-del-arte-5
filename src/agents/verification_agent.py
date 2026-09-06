@@ -186,8 +186,8 @@ class VerificationAgent:
                 merged[key] = value
         return merged
 
-    # Integra los resultados de una recuperación adicional con lo que el
-    # verificador ya había recuperado, sin perder historial ni duplicar evidencia.
+    # Integra los resultados de una nueva ronda de recuperación con la información
+    # ya acumulada por el verificador, manteniendo el historial y evitando duplicar evidencias.
     @staticmethod
     def _merge_retrieval_delta(previous: Mapping[str, Any], delta: Mapping[str, Any], *,
                                allowed_source_pairs: Sequence[Sequence[str]] = (),
@@ -272,7 +272,6 @@ class VerificationAgent:
         selection = select_evidence_for_scientific_judgment(current)
         trace.append("EVIDENCE_SELECTED")
 
-       
         if not precheck["scientific_judgment_required"]:
             # Devuelve el resultado final cuando el claim no necesita una evaluación científica adicional.
             return self._terminal(current, precheck, selection, "NOT_APPLICABLE", "NONE", technical_issues,
@@ -303,6 +302,9 @@ class VerificationAgent:
         previous_errors: list[str] = []
         validated: dict[str, Any] | None = None
 
+        # Ejecuta iterativamente el juicio del LLM mientras queden llamadas permitidas:
+        # define los veredictos válidos, construye el prompt con la evidencia seleccionada
+        # y registra cada solicitud realizada al LLM.
         while llm_calls < max_calls:
             allowed = allowed_verdicts_for_claim(current, precheck)
             messages = build_verification_messages(current, eligible_evidence=selection.eligible_evidence,
@@ -405,7 +407,7 @@ class VerificationAgent:
 
                 # Intenta ejecutar la recuperación adicional de evidencia. Si falla, registra el error técnico y finaliza el claim sin evaluarlo.
                 try:
-                    retrieval_result = self.retrieval_tool.retrieve_more(request)
+                    retrieval_result = self.retrieval_tool.retrieve_more(request) #AGENTIC RETRIEVAL
                 
                 except Exception as exc:
                     technical_issues.append(
@@ -536,8 +538,11 @@ class VerificationAgent:
                 updated = dict(current)
                 updated["retrieval_result"] = fused_retrieval
 
-                # Si la nueva recuperación trae una validación determinística actualizada,
-                # la incorpora al contexto del claim.
+                # Si la nueva recuperación trae resultados actualizados de validaciones automáticas,
+                # incorpora comprobaciones como numeric_pairs_valid, comparative_coverage_ok,
+                # attribution_coverage_ok y missing_structural_elements, para reflejar si la nueva
+                # evidencia cubre correctamente los valores numéricos, comparaciones, atribuciones
+                # y elementos estructurales necesarios para respaldar el claim. 
                 if "deterministic_validation" in validated_delta:
                     merged_validation = dict(updated["deterministic_validation"])
                     merged_validation.update(validated_delta["deterministic_validation"])
