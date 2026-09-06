@@ -474,22 +474,9 @@ def determine_forced_outcome(observation: AgenticRetrievalObservation) -> str | 
 # Si la evidencia ya es SUFFICIENT o el presupuesto se agotó, devuelve una tupla vacía,
 # porque esos casos los resuelve directamente determine_forced_outcome().
 def compute_allowed_actions(observation: AgenticRetrievalObservation) -> tuple[str, ...]:
-    """Gate planner-seleccionable. Llamar SOLO después de confirmar que
-    ``determine_forced_outcome`` devolvió ``None`` (evidencia
-    insuficiente, presupuesto disponible).
-
-    - ``ADJUST_TOP_K`` solo si ``current_top_k < effective_top_k_max``
-      (restricción estructural real, no artificial).
-    - ``REWRITE_QUERY`` siempre disponible mientras haya presupuesto
-      (sin cap independiente -- comparte el mismo presupuesto).
-    - ``ACCEPT_EVIDENCE`` NUNCA en la primera insuficiencia
-      (``retrieval_round == 0``) -- solo tras al menos un intento de
-      mejora (``retrieval_round >= 1``), y solo si
-      ``minimum_viable_evidence``.
-    """
     if observation.grade_result == "SUFFICIENT" or observation.remaining_retrieval_budget <= 0:
         return ()
-
+        
     actions: list[str] = []
     if observation.current_top_k < observation.effective_top_k_max:
         actions.append("ADJUST_TOP_K")
@@ -497,7 +484,6 @@ def compute_allowed_actions(observation: AgenticRetrievalObservation) -> tuple[s
 
     if observation.retrieval_round >= 1 and observation.minimum_viable_evidence:
         actions.append("ACCEPT_EVIDENCE")
-
     return tuple(actions)
 
 
