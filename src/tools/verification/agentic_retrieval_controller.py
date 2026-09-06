@@ -635,6 +635,17 @@ def parse_agentic_planner_response(
     )
     return {"selected_action": selected_action, "decision_basis": decision_basis}
 
+# Invoca al planner y valida su respuesta, permitiendo varios intentos cuando
+# la salida no cumple el formato o las reglas esperadas.
+#
+# En cada intento:
+# - llama al planner con el mismo prompt;
+# - intenta parsear y validar la respuesta;
+# - si la respuesta es válida, la devuelve inmediatamente;
+# - si es inválida, guarda el error y vuelve a intentarlo.
+#
+# max_retries indica cuántos reintentos adicionales se permiten después del
+# primer intento, por lo que attempts = max_retries + 1.
 
 def invoke_agentic_planner_with_retry(
     *,
@@ -668,7 +679,10 @@ def invoke_agentic_planner_with_retry(
 
 AGENTIC_TRANSITION_INVALID = "AGENTIC_TRANSITION_INVALID"
 
-
+# Excepción para acciones válidas que no pueden materializarse.
+# Por ejemplo, REWRITE_QUERY puede estar permitido por el controller, pero la
+# herramienta puede no encontrar términos nuevos suficientes para generar una
+# reformulación real de la consulta.
 class AgenticRetrievalActionUnavailable(Exception):
     """E2E-BUG-01 (contract fix): excepción tipada de integración -- la
     acción seleccionada era legal según ``compute_allowed_actions`` para
@@ -687,6 +701,9 @@ EXECUTION_STATUS_ACTION_UNAVAILABLE = "ACTION_UNAVAILABLE"
 EXECUTION_STATUS_TERMINAL = "TERMINAL"
 
 
+# Valida que una acción de mejora haya producido exactamente los cambios permitidos
+# en el estado del ciclo. Compara la Observation anterior y posterior para impedir
+# que una tool modifique campos que no le corresponden.
 def _validate_improvement_transition(
     *, action: str, before: AgenticRetrievalObservation, after: AgenticRetrievalObservation
 ) -> None:
@@ -728,6 +745,9 @@ def _validate_improvement_transition(
             "-- el presupuesto compartido es la garantía de terminación del ciclo."
         )
 
+    # REWRITE_QUERY debe cambiar únicamente la consulta de búsqueda:
+    # genera una query distinta, incrementa el contador de reescrituras
+    # y mantiene sin cambios el top_k actual.
     if action == "REWRITE_QUERY":
         if after.current_query == before.current_query:
             raise ValueError("REWRITE_QUERY: current_query_after debe ser distinto de current_query_before.")
@@ -741,6 +761,9 @@ def _validate_improvement_transition(
                 f"REWRITE_QUERY: current_top_k_after ({after.current_top_k}) debe ser igual a "
                 f"current_top_k_before ({before.current_top_k}) -- REWRITE_QUERY no toca top_k."
             )
+    # ADJUST_TOP_K mantiene intacta la consulta y aumenta únicamente la cantidad
+    # de resultados solicitados, sin superar el máximo permitido ni modificar
+    # el contador de reescrituras.
     elif action == "ADJUST_TOP_K":
         if after.current_query != before.current_query:
             raise ValueError(
@@ -766,7 +789,8 @@ def _validate_improvement_transition(
     else:
         raise ValueError(f"_validate_improvement_transition: acción inesperada {action!r}.")
 
-
+# Genera automáticamente la justificación cuando solo existe una acción posible
+# y, por tanto, no es necesario consultar al planner.
 def _infer_deterministic_decision_basis(observation: AgenticRetrievalObservation) -> str:
     """Cuando solo hay 1 acción disponible, Python ejecuta directamente
     sin consultar al planner -- pero el step sigue registrando un
@@ -794,83 +818,41 @@ class AgenticRetrievalResult:
     steps: list[dict[str, Any]] = field(default_factory=list)
     final_observation: AgenticRetrievalObservation | None = None
 
-
+# Ejecuta el ciclo completo de Agentic Retrieval para un claim, partiendo de
+# una recuperación inicial ya evaluada, hasta llegar a una condición terminal:
+# aceptar la evidencia, finalizar sin resolver, detectar fallo del planner
+# o rechazar una transición inválida.
 def run_agentic_retrieval_cycle(
     *,
     initial_observation: AgenticRetrievalObservation,
     invoke_planner_fn: Callable[[str], str],
     execute_action_fn: Callable[[str, str, AgenticRetrievalObservation], AgenticRetrievalObservation],
 ) -> AgenticRetrievalResult:
-    """Ejecuta el ciclo desde ``initial_observation`` (resultado ya
-    materializado de RETRIEVE inicial + GRADE_EVIDENCE) hasta
-    ACCEPT_EVIDENCE/FINISH_UNRESOLVED/AGENTIC_PLANNER_FAILED/
-    AGENTIC_TRANSITION_INVALID.
-
-    El planner LLM SOLO se invoca cuando ``compute_allowed_actions``
-    devuelve 2 o más acciones -- con exactamente 1 acción disponible,
-    Python la ejecuta directamente (``decision_basis`` derivado
-    determinísticamente); con 0, ``determine_forced_outcome`` ya cerró
-    el ciclo antes de llegar aquí.
-
-    ``execute_action_fn(selected_action, decision_basis, observation)
-    -> nueva Observation`` es la tool real (inyectada) que ejecuta
-    REWRITE_QUERY/ADJUST_TOP_K (incluye el RETRIEVE + GRADE_EVIDENCE
-    subsiguientes, ambos deterministas). ``decision_basis`` se pasa
-    EXACTAMENTE tal como se resolvió para este step (respuesta
-    validada real del planner cuando lo hubo, o el valor determinista
-    ya calculado por Python cuando el planner no fue consultado -- ver
-    ``_infer_deterministic_decision_basis``) -- CONTRATO AMPLIADO en
-    Bloque 4: antes esta firma solo recibía ``(selected_action,
-    observation)``, perdiendo qué reason_code específico motivó la
-    decisión cuando ``observation.reason_codes`` tenía más de un
-    elemento. Sin este dato, un executor no puede derivar
-    ``rewrite_reason`` (Bloque 3) con fidelidad al planner real -- solo
-    podría aproximarlo (ej. tomar el primer reason_code), perdiendo
-    trazabilidad semántica. Su resultado se valida contra el contrato
-    exacto de la acción (``_validate_improvement_transition``) antes de
-    continuar -- fail-closed si la tool no respeta el presupuesto
-    compartido o el contrato de la acción."""
     observation = initial_observation
     steps: list[dict[str, Any]] = []
-    # E2E-BUG-01: exclusiones LOCALES a la Observation actual -- una
-    # acción legal según compute_allowed_actions puede resultar no
-    # ejecutable con los datos concretos disponibles (ver
-    # AgenticRetrievalActionUnavailable). Se reinicia en cuanto se
-    # obtiene una nueva Observation real (evidencia distinta puede
-    # volver viable una acción que antes no lo era).
     unavailable_actions_for_current_observation: set[str] = set()
-
+    
+    # Repite el ciclo de decisión, ejecución y reevaluación hasta alcanzar
+    # una condición terminal.
     while True:
         forced_outcome = determine_forced_outcome(observation)
         if forced_outcome is not None:
             return AgenticRetrievalResult(
                 claim_id=observation.claim_id, outcome=forced_outcome, steps=steps, final_observation=observation,
             )
-
         allowed_actions = tuple(
             a for a in compute_allowed_actions(observation)
             if a not in unavailable_actions_for_current_observation
         )
         if not allowed_actions:
-            # 0 acciones efectivas -- ya sea porque compute_allowed_actions
-            # no ofrecía ninguna (salvaguarda, no debería alcanzarse dado
-            # determine_forced_outcome) o porque todas las legales
-            # resultaron ACTION_UNAVAILABLE para esta Observation.
             return AgenticRetrievalResult(
                 claim_id=observation.claim_id, outcome=FINISH_UNRESOLVED, steps=steps, final_observation=observation,
             )
-
         if len(allowed_actions) == 1:
-            # Una sola acción efectiva -- Python ya sabe qué hacer, el
-            # planner NUNCA se invoca (ni siquiera una segunda vez tras
-            # descartar una acción no ejecutable).
             selected_action = allowed_actions[0]
             decision_basis = _infer_deterministic_decision_basis(observation)
             planner_invoked = False
         else:
-            # El prompt se construye con allowed_actions_effective -- el
-            # planner nunca puede volver a elegir una acción ya marcada
-            # no ejecutable para esta misma Observation.
             prompt = build_agentic_planner_prompt(observation=observation, allowed_actions=allowed_actions)
             try:
                 decision = invoke_agentic_planner_with_retry(
@@ -887,6 +869,10 @@ def run_agentic_retrieval_cycle(
 
         step_number = len(steps) + 1
 
+        # Si la acción elegida es ACCEPT_EVIDENCE, registra la decisión como terminal
+        # y finaliza el ciclo devolviendo la evidencia disponible como aceptada.
+        # Ejecuta la acción seleccionada, como REWRITE_QUERY o ADJUST_TOP_K,
+        # junto con la nueva recuperación y evaluación de evidencia asociadas.
         if selected_action == "ACCEPT_EVIDENCE":
             steps.append({
                 "step_number": step_number,
@@ -898,30 +884,16 @@ def run_agentic_retrieval_cycle(
             return AgenticRetrievalResult(
                 claim_id=observation.claim_id, outcome="ACCEPT_EVIDENCE", steps=steps, final_observation=observation,
             )
-
         observation_before = observation
         try:
             observation_after = execute_action_fn(selected_action, decision_basis, observation_before)
         except AgenticRetrievalActionUnavailable as exc:
-            # E2E-DIAG-02: instrumentación temporal, solo diagnóstico --
-            # no cambia lógica ni contratos, no captura nada nuevo.
             print(
                 "AGENTIC_ACTION_UNAVAILABLE_CAUGHT",
                 type(exc).__module__,
                 type(exc).__qualname__,
                 repr(exc),
             )
-            # La acción era legal para esta Observation, pero no pudo
-            # ejecutarse con los datos concretos disponibles -- NO
-            # consume budget/round (no hubo retrieval, no hay nueva
-            # Observation), NO aparece como retrieval_transition
-            # (Bloque 6 -- nunca se llega a construir una), pero SÍ
-            # queda auditada en decision_steps. Se excluye SOLO para
-            # esta Observation -- el bucle vuelve a evaluar
-            # allowed_actions_effective sin ella, sin avanzar
-            # observation, sin volver a intentarla indefinidamente
-            # (queda en unavailable_actions_for_current_observation
-            # hasta la próxima Observation real).
             steps.append({
                 "step_number": step_number,
                 "selected_action": selected_action,
@@ -932,6 +904,9 @@ def run_agentic_retrieval_cycle(
             unavailable_actions_for_current_observation.add(selected_action)
             continue
 
+        # Registra que la acción de mejora se ejecutó correctamente, guardando el número
+        # de paso, la acción seleccionada, su justificación, si intervino el planner
+        # y el estado final de ejecución.
         steps.append({
             "step_number": step_number,
             "selected_action": selected_action,
@@ -940,6 +915,9 @@ def run_agentic_retrieval_cycle(
             "execution_status": EXECUTION_STATUS_EXECUTED,
         })
 
+        # Si la transición viola alguna regla del ciclo, finaliza con
+        # AGENTIC_TRANSITION_INVALID y conserva como estado final la Observation anterior,
+        # evitando propagar un estado inconsistente.
         try:
             _validate_improvement_transition(action=selected_action, before=observation_before, after=observation_after)
         except ValueError:
