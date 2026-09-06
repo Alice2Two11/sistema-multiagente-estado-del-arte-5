@@ -1,47 +1,102 @@
-"""Agentic Retrieval (Stage 07, pre-verificación) -- Bloque 2:
-controller (Observation, gate de acciones, ciclo).
+"""
+Agentic Retrieval de la Etapa 07 -- Bloque 2
+Controla el ciclo de recuperación adicional de evidencia antes de verificar el claim.
+
+Flujo general:
 
     claim
-      -> RETRIEVE (determinista, siempre, query=claim_text, top_k=top_k_initial)
-      -> GRADE_EVIDENCE (determinista, automático -- src.tools.verification.
-         agentic_retrieval_grader.grade_evidence, Bloque 1)
-      -> SUFFICIENT? -> ACCEPT_EVIDENCE (determinista, forzado por el
-         controller, el planner NUNCA es consultado en este caso)
-      -> INSUFFICIENT, budget agotado?
-           sí -> minimum_viable_evidence? true -> ACCEPT_EVIDENCE (forzado)
-                                            false -> FINISH_UNRESOLVED (forzado)
-           no -> planner elige entre {REWRITE_QUERY, ADJUST_TOP_K} (primera
-                 insuficiencia) o {REWRITE_QUERY, ADJUST_TOP_K, ACCEPT_EVIDENCE
-                 si minimum_viable_evidence} (insuficiencias posteriores)
-      -> [tool ejecuta la acción elegida] -> RETRIEVE -> GRADE_EVIDENCE -> ...
+      -> RETRIEVE
+         Recupera evidencia usando inicialmente el texto del claim
+         como consulta y el valor top_k_initial.
 
-Punto de decisión ReAct genuino, y el ÚNICO: cuando existe evidencia
-insuficiente con presupuesto disponible, el planner elige realmente
-entre REWRITE_QUERY y ADJUST_TOP_K (dos acciones con efectos
-observables distintos, ninguna reducible a la otra) -- y, tras al
-menos un intento de mejora, también entre aceptar lo que hay
-(ACCEPT_EVIDENCE) si es mínimamente viable. RETRIEVE/GRADE_EVIDENCE
-NUNCA son decisiones del planner -- son consecuencias obligatorias.
-ACCEPT_EVIDENCE NUNCA está disponible en la primera insuficiencia
-(``retrieval_round == 0``) -- el sistema intenta mejorar la
-recuperación primero, tal como se acordó explícitamente.
+      -> GRADE_EVIDENCE
+         Evalúa automáticamente si la evidencia recuperada es suficiente
+         para respaldar el claim.
 
-Autocontenido: NO reutiliza ``react_prompting.py`` (auditado en el
-diseño: importa y valida directamente contra ``REACT_ACTIONS``/
-``DECISION_BASIS_VALUES`` del dominio post-verificación descartado --
-no es genérico tal como está escrito). Este módulo define su propio
-prompt/parseo mínimo, mismo patrón conceptual (JSON de 2 claves, sin
-rationale libre, fail-closed ante malformado).
+      -> ¿La evidencia es suficiente?
+           sí -> ACCEPT_EVIDENCE
+                 El controller acepta automáticamente la evidencia.
+                 En este caso el planner no interviene.
 
-Presupuesto: reutiliza directamente ``remaining_retrieval_budget``
-(derivado del mismo ``max_additional_retrieval_requests`` compartido
-con ``verify_claim``, ver Bloque 1
-``compute_effective_budget_for_verify_claim``) como único límite del
-ciclo -- sin crear ``MAX_AGENTIC_RAG_STEPS_PER_CLAIM`` como contador
-independiente (decisión ya tomada: evitar contadores redundantes).
+           no -> ¿Se agotó el presupuesto de recuperación?
 
-Este bloque NO toca verification_runtime.py, verification_agent.py, ni
-el retriever -- solo el controller y sus tests."""
+                    sí -> ¿La evidencia disponible es mínimamente viable?
+                              sí -> ACCEPT_EVIDENCE
+                                    Se acepta lo mejor que se consiguió.
+
+                              no -> FINISH_UNRESOLVED
+                                    El claim queda sin evidencia suficiente.
+
+                    no -> el planner decide cómo mejorar la recuperación:
+                           - REWRITE_QUERY:
+                             reformula la consulta para buscar evidencia
+                             desde otra formulación del claim.
+
+                           - ADJUST_TOP_K:
+                             modifica la cantidad de resultados recuperados.
+
+                           - ACCEPT_EVIDENCE:
+                             solo puede elegirse después de haber intentado
+                             mejorar la recuperación y únicamente si la
+                             evidencia disponible es mínimamente viable.
+
+      -> se ejecuta la acción elegida
+      -> se realiza una nueva recuperación
+      -> se vuelve a evaluar la evidencia
+      -> el ciclo continúa hasta aceptar evidencia o finalizar sin resolver.
+
+
+Decisión del planner:
+
+El planner solo interviene cuando la evidencia es insuficiente y todavía
+queda presupuesto para realizar nuevas recuperaciones.
+
+En la primera insuficiencia debe intentar mejorar la búsqueda, por lo que
+solo puede elegir entre:
+
+    REWRITE_QUERY
+    ADJUST_TOP_K
+
+No puede aceptar inmediatamente la evidencia recuperada.
+
+Después de al menos un intento de mejora, también puede elegir
+ACCEPT_EVIDENCE si lo recuperado alcanza el mínimo necesario para continuar.
+
+Las acciones RETRIEVE y GRADE_EVIDENCE no son decisiones del planner:
+el controller las ejecuta obligatoriamente como parte del ciclo.
+
+
+Prompt y parseo:
+
+Este módulo no reutiliza react_prompting.py porque dicho componente está
+acoplado al dominio de post-verificación y valida acciones diferentes.
+
+Por eso define su propio prompt y parser mínimo. El planner debe responder
+con una estructura JSON controlada, sin razonamientos libres. Si la salida
+es inválida o no cumple el contrato esperado, el sistema falla de forma
+segura en lugar de ejecutar una acción no válida.
+
+
+Presupuesto:
+
+El ciclo utiliza remaining_retrieval_budget como único contador de
+recuperaciones adicionales disponibles.
+
+Este valor deriva de max_additional_retrieval_requests y es compartido con
+la lógica de verificación del claim. No se crea un contador adicional para
+Agentic Retrieval, evitando límites redundantes o inconsistentes.
+
+
+Alcance del bloque:
+
+Este módulo implementa únicamente el controller del ciclo de Agentic
+Retrieval y sus pruebas.
+
+No modifica:
+    - verification_runtime.py
+    - verification_agent.py
+    - el retriever
+"""
 
 from __future__ import annotations
 
@@ -52,20 +107,23 @@ from typing import Any, Callable
 from src.config.agentic_retrieval_policy_config import GRADE_REASON_CODES
 
 # ---------------------------------------------------------------------------
-# Acciones planner-seleccionables -- SOLO estas 3. RETRIEVE/GRADE_EVIDENCE
-# son consecuencias obligatorias (nunca elegidas por el planner).
-# FINISH_UNRESOLVED es un outcome forzado por el controller, nunca una
-# acción que el planner elija directamente.
+# Acciones que el planner puede elegir durante Agentic Retrieval.
+# Solo puede seleccionar entre reformular la consulta, ajustar el top_k
+# o aceptar la evidencia disponible cuando esta ya sea mínimamente viable.
+#
+# FINISH_UNRESOLVED no es una decisión del planner: el controller la aplica
+# automáticamente cuando la evidencia sigue siendo insuficiente y ya no queda
+# presupuesto para realizar nuevas recuperaciones.
 # ---------------------------------------------------------------------------
-
 AGENTIC_RETRIEVAL_ACTIONS = ("REWRITE_QUERY", "ADJUST_TOP_K", "ACCEPT_EVIDENCE")
-
 FINISH_UNRESOLVED = "FINISH_UNRESOLVED"
 AGENTIC_PLANNER_FAILED = "AGENTIC_PLANNER_FAILED"
 
-# decision_basis -- enum cerrado, refleja 1:1 los reason codes del
-# grader (Bloque 1) más un valor para la aceptación deliberada pese a
-# huecos. Sin rationale libre ni chain-of-thought.
+# decision_basis indica la razón concreta en la que se basa la decisión del planner.
+# Solo admite motivos predefinidos por el grader: poca cantidad de candidatos,
+# baja diversidad de fuentes, baja relevancia, cobertura insuficiente o aceptación
+# deliberada de evidencia que, aunque tenga vacíos, sigue siendo mínimamente viable.
+# No permite explicaciones libres ni razonamientos abiertos del LLM.
 AGENTIC_DECISION_BASIS_VALUES = (
     "EVIDENCE_INSUFFICIENT_LOW_CANDIDATE_COUNT",
     "EVIDENCE_INSUFFICIENT_LOW_SOURCE_DIVERSITY",
@@ -74,7 +132,9 @@ AGENTIC_DECISION_BASIS_VALUES = (
     "EVIDENCE_ACCEPTABLE_DESPITE_GAPS",
 )
 
-
+# Valida que la acción elegida por el planner pertenezca al conjunto de
+# acciones permitidas para Agentic Retrieval. Si recibe una acción no válida,
+# detiene el proceso con un error; si es válida, devuelve la misma acción.
 def validate_selected_action(value: str) -> str:
     if value not in AGENTIC_RETRIEVAL_ACTIONS:
         raise ValueError(
@@ -91,18 +151,13 @@ def validate_decision_basis(value: str) -> str:
     return value
 
 
-# ---------------------------------------------------------------------------
-# Observation
-# ---------------------------------------------------------------------------
 
+# Representa el estado observable del ciclo de Agentic Retrieval para un claim
+# en un instante concreto. Todos sus valores provienen de resultados reales
+# de recuperación y evaluación de evidencia, no de estados inferidos o inventados.
 
 @dataclass(frozen=True)
 class AgenticRetrievalObservation:
-    """Estado real observable del ciclo de recuperación para UN claim,
-    en un momento dado. Todos los campos derivan de resultados reales
-    de RETRIEVE/GRADE_EVIDENCE (Bloque 1) -- no hay estados
-    inventados."""
-
     claim_id: str
     claim_text: str
     current_query: str
@@ -122,6 +177,10 @@ class AgenticRetrievalObservation:
     minimum_viable_evidence: bool
     query_rewrite_count: int
 
+    # Valida que todos los campos que deben representar cantidades sean enteros reales.
+    # La comprobación excluye explícitamente los valores booleanos porque en Python
+    # bool hereda de int y, sin esta validación, True o False podrían aceptarse
+    # incorrectamente como valores numéricos.
     def __post_init__(self) -> None:
         # --- Tipos estrictos: bool es subclase de int en Python ---
         for int_field_name, int_field_value in (
@@ -138,21 +197,23 @@ class AgenticRetrievalObservation:
                     f"{type(int_field_value).__name__} ({int_field_value!r})."
                 )
 
-        if self.retrieval_round < 0:
+        # Valida que los valores numéricos del estado sean coherentes con las reglas del ciclo
+        # de recuperación y que no representen estados imposibles del controller.
+        if self.retrieval_round < 0: # no pueden ser negativos, porque representan contadores acumulados.
             raise ValueError(f"retrieval_round debe ser >= 0, recibido {self.retrieval_round!r}")
-        if self.remaining_retrieval_budget < 0:
+        if self.remaining_retrieval_budget < 0: # no pueden ser negativos, porque representan contadores acumulados.
             raise ValueError(
                 f"remaining_retrieval_budget debe ser >= 0, recibido {self.remaining_retrieval_budget!r}"
             )
-        if self.candidate_count < 0:
+        if self.candidate_count < 0: # no pueden ser negativos, porque representan contadores acumulados.
             raise ValueError(f"candidate_count debe ser >= 0, recibido {self.candidate_count!r}")
-        if self.current_top_k <= 0:
+        if self.current_top_k <= 0: # no pueden ser negativos, porque representan contadores acumulados.
             raise ValueError(f"current_top_k debe ser > 0, recibido {self.current_top_k!r}")
-        if self.effective_top_k_max <= 0:
+        if self.effective_top_k_max <= 0: # no pueden ser negativos, porque representan contadores acumulados.
             raise ValueError(f"effective_top_k_max debe ser > 0, recibido {self.effective_top_k_max!r}")
-        if self.query_rewrite_count < 0:
+        if self.query_rewrite_count < 0: # no pueden ser negativos, porque representan contadores acumulados.
             raise ValueError(f"query_rewrite_count debe ser >= 0, recibido {self.query_rewrite_count!r}")
-        if self.current_top_k > self.effective_top_k_max:
+        if self.current_top_k > self.effective_top_k_max: # nunca puede superar el máximo permitido para la recuperación.
             raise ValueError(
                 f"current_top_k ({self.current_top_k}) no puede exceder "
                 f"effective_top_k_max ({self.effective_top_k_max})."
@@ -184,11 +245,13 @@ class AgenticRetrievalObservation:
                 f"max_relevance_score debe estar en [0.0, 1.0], recibido {self.max_relevance_score!r}."
             )
 
-        # Tipado estricto: claim_id/claim_text/current_query deben ser str
-        # reales, no cualquier valor coaccionable con str(...) -- bool/int/
-        # float/None/listas se rechazan explícitamente. Especialmente
-        # importante para current_query, que Bloque 3 modificará de verdad
-        # (REWRITE_QUERY).
+        # Valida que claim_id, claim_text y current_query sean cadenas de texto reales
+        # y no valores de otros tipos convertibles implícitamente a str, como bool, int,
+        # float, None o listas.
+        #
+        # También comprueba que ninguna de estas cadenas esté vacía o contenga solo espacios.
+        # Esta validación es especialmente importante para current_query, porque posteriormente
+        # puede ser modificada por la acción REWRITE_QUERY y debe mantenerse siempre como texto válido.
         for str_field_name, str_field_value in (
             ("claim_id", self.claim_id),
             ("claim_text", self.claim_text),
@@ -202,13 +265,11 @@ class AgenticRetrievalObservation:
             if not str_field_value.strip():
                 raise ValueError(f"{str_field_name} no puede estar vacío.")
 
-        # Si nunca hubo REWRITE_QUERY, la query debe seguir siendo el
-        # claim original -- ninguna transición válida (initial retrieval,
-        # ADJUST_TOP_K) modifica current_query sin pasar por REWRITE_QUERY,
-        # que es lo único que incrementa query_rewrite_count. No se impone
-        # la inversa (query_rewrite_count > 0 no implica current_query !=
-        # claim_text -- una reescritura podría, en teoría, converger de
-        # nuevo al texto original).
+        # Comprueba que, mientras no se haya ejecutado ninguna acción REWRITE_QUERY,
+        # la consulta utilizada siga siendo exactamente el texto original del claim.
+        # Las otras transiciones válidas, como la recuperación inicial o ADJUST_TOP_K,
+        # pueden cambiar la ronda o la cantidad de resultados recuperados, pero no modifican
+        # el contenido de current_query.
         if self.query_rewrite_count == 0 and self.current_query != self.claim_text:
             raise ValueError(
                 "query_rewrite_count=0 implica current_query == claim_text -- "
@@ -217,14 +278,16 @@ class AgenticRetrievalObservation:
                 "producir este estado sin haber pasado por REWRITE_QUERY."
             )
 
+        # Valida que grade_result solo pueda ser SUFFICIENT o INSUFFICIENT.
+        #
+        # También comprueba que reason_codes sea una tupla de códigos válidos producidos
+        # por el grader. Cada elemento debe ser una cadena incluida en GRADE_REASON_CODES,
+        # reutilizando así el mismo vocabulario de motivos definido en el Bloque 1.
+        #
+        # Finalmente, verifica que no existan códigos repetidos, porque cada motivo de
+        # insuficiencia debe registrarse como máximo una vez.
         if self.grade_result not in ("SUFFICIENT", "INSUFFICIENT"):
             raise ValueError(f"grade_result inválido: {self.grade_result!r}")
-
-        # reason_codes endurecido con el mismo rigor que evidence_ids:
-        # tuple real (no list -- una lista mutable dentro de una dataclass
-        # frozen=True rompe la expectativa de inmutabilidad del estado),
-        # cada elemento str real, perteneciente a GRADE_REASON_CODES
-        # (Bloque 1, sin duplicar vocabulario), sin duplicados.
         if not isinstance(self.reason_codes, tuple):
             raise TypeError(
                 f"reason_codes debe ser tuple real, recibido {type(self.reason_codes).__name__} "
@@ -246,9 +309,10 @@ class AgenticRetrievalObservation:
                 "debe aparecer como máximo una vez."
             )
 
-        # Coherencia con el contrato real del grader de Bloque 1
-        # (confirmado: grade_result = "INSUFFICIENT" if reason_codes else
-        # "SUFFICIENT" -- no existe caso legítimo de excepción):
+
+        # Comprueba que el resultado del grader sea coherente con los motivos registrados:
+        # si la evidencia es SUFFICIENT, no debe existir ningún reason_code;
+        # si es INSUFFICIENT, debe existir al menos un motivo que explique la insuficiencia.
         if self.grade_result == "SUFFICIENT" and self.reason_codes:
             raise ValueError(
                 "grade_result=SUFFICIENT debe tener reason_codes vacío -- "
@@ -259,7 +323,10 @@ class AgenticRetrievalObservation:
                 "grade_result=INSUFFICIENT debe tener al menos un reason_code -- "
                 "recibido reason_codes vacío."
             )
-
+        # valida que minimum_viable_evidence sea un booleano real.
+        # Este campo controla si una evidencia insuficiente pero todavía mínimamente útil
+        # puede ser aceptada cuando se agota el presupuesto de recuperación, por lo que
+        # valores de otros tipos podrían provocar una aceptación incorrecta.
         if not isinstance(self.minimum_viable_evidence, bool):
             raise TypeError(
                 f"minimum_viable_evidence debe ser bool real, recibido "
@@ -268,11 +335,10 @@ class AgenticRetrievalObservation:
                 "el presupuesto."
             )
 
-        # SUFFICIENT es un criterio más estricto que minimum_viable_evidence
-        # por diseño (Bloque 1: min_relevance_score del grader > el de
-        # minimum_viable) -- SUFFICIENT + minimum_viable_evidence=False es
-        # un estado imposible: si la evidencia ya pasó el criterio más
-        # estricto, necesariamente pasa el más laxo.
+        # Comprueba la coherencia entre el resultado del grader y el criterio de evidencia
+        # mínimamente viable. Como SUFFICIENT exige condiciones más estrictas que
+        # minimum_viable_evidence, toda evidencia clasificada como SUFFICIENT debe cumplir
+        # necesariamente también el mínimo requerido para ser considerada viable.
         if self.grade_result == "SUFFICIENT" and self.minimum_viable_evidence is not True:
             raise ValueError(
                 "grade_result=SUFFICIENT implica minimum_viable_evidence=True -- "
@@ -366,10 +432,19 @@ class AgenticRetrievalObservation:
 
 
 # ---------------------------------------------------------------------------
-# Gate de decisión -- único punto ReAct genuino del sistema auditado.
+# Gate de decisión 
 # ---------------------------------------------------------------------------
 
-
+# Determina si el controller puede resolver el estado actual sin consultar al planner.
+#
+# Si la evidencia ya fue calificada como SUFFICIENT, la acepta automáticamente.
+# Si la evidencia sigue siendo INSUFFICIENT pero ya no queda presupuesto para
+# nuevas recuperaciones, el controller toma la decisión final:
+# acepta la evidencia si todavía es mínimamente viable o finaliza el claim
+# como no resuelto si no alcanza ese mínimo.
+#
+# Solo devuelve None cuando la evidencia es insuficiente y aún queda presupuesto,
+# porque en ese caso sí debe intervenir el planner para decidir cómo mejorar la búsqueda.
 def determine_forced_outcome(observation: AgenticRetrievalObservation) -> str | None:
     """Casos que el controller resuelve SIN consultar al planner:
     - SUFFICIENT: ACCEPT_EVIDENCE automático (no hay decisión que tomar).
@@ -382,7 +457,22 @@ def determine_forced_outcome(observation: AgenticRetrievalObservation) -> str | 
         return "ACCEPT_EVIDENCE" if observation.minimum_viable_evidence else FINISH_UNRESOLVED
     return None
 
-
+# Define qué acciones puede elegir el planner cuando la evidencia sigue siendo
+# insuficiente, todavía queda presupuesto y no existe un resultado forzado.
+#
+# ADJUST_TOP_K solo se permite si aún es posible aumentar la cantidad de resultados
+# recuperados sin superar effective_top_k_max.
+#
+# REWRITE_QUERY permanece disponible mientras exista presupuesto, porque reformular
+# la consulta es otra forma válida de intentar encontrar mejor evidencia.
+#
+# ACCEPT_EVIDENCE no puede elegirse en la primera insuficiencia: el sistema obliga
+# primero a intentar mejorar la recuperación. Solo se habilita a partir de la segunda
+# evaluación, cuando ya hubo al menos un intento de mejora y la evidencia disponible
+# sigue siendo mínimamente viable.
+#
+# Si la evidencia ya es SUFFICIENT o el presupuesto se agotó, devuelve una tupla vacía,
+# porque esos casos los resuelve directamente determine_forced_outcome().
 def compute_allowed_actions(observation: AgenticRetrievalObservation) -> tuple[str, ...]:
     """Gate planner-seleccionable. Llamar SOLO después de confirmar que
     ``determine_forced_outcome`` devolvió ``None`` (evidencia
@@ -415,15 +505,16 @@ def compute_allowed_actions(observation: AgenticRetrievalObservation) -> tuple[s
 # Planner -- prompt mínimo + parseo fail-closed, autocontenido.
 # ---------------------------------------------------------------------------
 
-
+# Define el error que se lanza cuando la respuesta del planner no puede convertirse
+# en una decisión válida, incluso después de intentar corregir o volver a interpretar
+# su salida según el formato esperado.
 class AgenticPlannerResponseError(ValueError):
     """La respuesta del planner no pudo interpretarse como una decisión
     válida tras agotar los reintentos de parseo."""
-
-
 MAX_PLANNER_PARSE_RETRIES = 2
 
-
+# Construye el prompt que se enviará al planner para que elija una única acción
+# válida de Agentic Retrieval a partir del estado actual del claim.
 def build_agentic_planner_prompt(
     *, observation: AgenticRetrievalObservation, allowed_actions: tuple[str, ...]
 ) -> str:
@@ -435,7 +526,6 @@ def build_agentic_planner_prompt(
         )
     for action in allowed_actions:
         validate_selected_action(action)
-
     return (
         "Eres el planner de recuperación agentic para UN claim científico, "
         "Stage 07 (pre-verificación).\n"
@@ -452,7 +542,8 @@ def build_agentic_planner_prompt(
         '"decision_basis": "<uno de los valores válidos>"}'
     )
 
-
+# Valida que la acción elegida por el planner sea coherente con la razón usada
+# para justificarla, no solo que ambos valores pertenezcan a sus enums permitidos.
 def _validate_action_decision_basis_coherence(
     *, selected_action: str, decision_basis: str, observation_reason_codes: tuple[str, ...]
 ) -> None:
@@ -472,6 +563,7 @@ def _validate_action_decision_basis_coherence(
             )
         return
 
+    # Valida la coherencia de las acciones de mejora REWRITE_QUERY y ADJUST_TOP_K
     # REWRITE_QUERY / ADJUST_TOP_K (acciones de mejora)
     if decision_basis == "EVIDENCE_ACCEPTABLE_DESPITE_GAPS":
         raise AgenticPlannerResponseError(
@@ -488,6 +580,17 @@ def _validate_action_decision_basis_coherence(
         )
 
 
+# Interpreta y valida la respuesta devuelta por el planner antes de aceptar su decisión.
+# Primero exige que la salida sea únicamente un objeto JSON válido, sin texto,
+# markdown ni contenido adicional.
+# Después comprueba que el JSON contenga exactamente dos campos:
+# selected_action y decision_basis, sin claves extra como rationale.
+# Luego valida que:
+# - selected_action sea una acción reconocida por Agentic Retrieval;
+# - esa acción esté permitida específicamente en el estado actual del ciclo;
+# - decision_basis pertenezca al conjunto cerrado de justificaciones válidas.
+# Finalmente verifica que la combinación entre acción y justificación sea coherente
+# con los reason_codes realmente observados en la evidencia actual.
 def parse_agentic_planner_response(
     raw_text: str, *, allowed_actions: tuple[str, ...], observation_reason_codes: tuple[str, ...] = (),
 ) -> dict[str, str]:
@@ -502,7 +605,6 @@ def parse_agentic_planner_response(
         raise AgenticPlannerResponseError(f"PLANNER_RESPONSE_INVALID_JSON: {exc.msg}") from exc
     if not isinstance(payload, dict):
         raise AgenticPlannerResponseError("PLANNER_RESPONSE_ROOT_NOT_OBJECT")
-
     expected_keys = {"selected_action", "decision_basis"}
     if set(payload.keys()) != expected_keys:
         raise AgenticPlannerResponseError(
@@ -510,10 +612,8 @@ def parse_agentic_planner_response(
             f"{sorted(expected_keys)}, se recibió {sorted(payload.keys())} -- "
             "no se acepta 'rationale' ni ningún otro campo."
         )
-
     selected_action = payload["selected_action"]
     decision_basis = payload["decision_basis"]
-
     if not isinstance(selected_action, str) or selected_action not in AGENTIC_RETRIEVAL_ACTIONS:
         raise AgenticPlannerResponseError(
             f"PLANNER_RESPONSE_INVALID_SELECTED_ACTION: {selected_action!r} "
@@ -529,12 +629,10 @@ def parse_agentic_planner_response(
             f"PLANNER_RESPONSE_INVALID_DECISION_BASIS: {decision_basis!r} "
             "no pertenece a AGENTIC_DECISION_BASIS_VALUES."
         )
-
     _validate_action_decision_basis_coherence(
         selected_action=selected_action, decision_basis=decision_basis,
         observation_reason_codes=observation_reason_codes,
     )
-
     return {"selected_action": selected_action, "decision_basis": decision_basis}
 
 
