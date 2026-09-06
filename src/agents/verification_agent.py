@@ -73,22 +73,24 @@ class ClaimVerificationResult:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-
+# Recorre las evidencias seleccionadas y determina cómo se utilizará cada una:
+# si contradice el claim, si solo puede cumplir un uso no probatorio,
+# o qué rol específico de soporte tendrá, por ejemplo como evidencia principal
+# o complementaria dentro del conjunto que respalda el claim.
 class VerificationAgent:
     def __init__(self, *, llm: VerificationLLM | None, retrieval_tool: ClaimRetrievalTool | None = None) -> None:
         self.llm = llm
         self.retrieval_tool = retrieval_tool
 
-    # Organiza cómo fue utilizada cada evidencia durante la verificación:
-    # soporte, contradicción u otro uso permitido, conservando su trazabilidad.
+    # Recorre las evidencias seleccionadas y determina qué papel tuvo cada una:
+    # contradicción, otro uso permitido o el rol asignado como soporte.
     @staticmethod
     def _evidence_usage(rows: Sequence[Mapping[str, Any]], ids: Sequence[str], role: str,
                         contradiction_ids: Sequence[str] = ()) -> tuple[dict[str, Any], ...]:
         by_id = {str(row["evidence_id"]): row for row in rows}
         contradiction_set = set(contradiction_ids)
         out = []
-        # Recorre las evidencias seleccionadas y determina qué papel tuvo cada una:
-        # contradicción, otro uso permitido o el rol asignado como soporte.
+        
         for evidence_id in ids:
             row = by_id[evidence_id]
             if evidence_id in contradiction_set:
@@ -98,7 +100,7 @@ class VerificationAgent:
             else:
                 usage_role = role
 
-            # Guarda la trazabilidad básica de cada evidencia utilizada,
+            # Guarda la trazabilidad de cada evidencia utilizada,
             # indicando su origen, autorización y función dentro de la verificación.
             out.append({
                 "evidence_id": evidence_id,
@@ -150,8 +152,8 @@ class VerificationAgent:
                 out.append(dict(item) if isinstance(item, Mapping) else item)
         return tuple(out)
 
-    # Toma la información vieja y nueva de una misma evidencia y construye un único registro actualizado.
-    # conservando sus datos originales y agregando lo recuperado en rondas posteriores.
+    # Toma la información previa y nueva de una misma evidencia y construye un único registro actualizado,
+    # conservando sus datos de procedencia y acumulando la información obtenida en rondas posteriores.
     @staticmethod
     def _merge_candidate(previous: Mapping[str, Any], delta: Mapping[str, Any]) -> dict[str, Any]:
         merged = dict(previous)
