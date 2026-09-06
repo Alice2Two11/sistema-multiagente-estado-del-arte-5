@@ -166,10 +166,6 @@ class AgenticRetrievalObservation:
     effective_top_k_max: int
     remaining_retrieval_budget: int
     candidate_count: int
-    # evidence_ids representa TODOS los candidatos materializados en esta
-    # ronda -- el mismo conjunto que candidate_count cuenta en
-    # grade_evidence (Bloque 1), no un subconjunto. Invariante obligatoria:
-    # candidate_count == len(evidence_ids) (ver __post_init__).
     evidence_ids: tuple[str, ...]
     max_relevance_score: float
     grade_result: str  # "SUFFICIENT" | "INSUFFICIENT"
