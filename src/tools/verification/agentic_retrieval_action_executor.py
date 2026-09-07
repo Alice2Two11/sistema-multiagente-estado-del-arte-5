@@ -250,7 +250,23 @@ class AgenticRetrievalActionExecutor:
             "-- solo REWRITE_QUERY/ADJUST_TOP_K (Bloque 4)."
         )
 
-    
+
+
+    # Ejecuta la acción REWRITE_QUERY sobre la Observation actual.
+    # Primero intenta generar una nueva consulta utilizando el claim, la query actual,
+    # los reason_codes detectados, el motivo específico del rewrite, los candidatos
+    # recuperados y las fuentes autorizadas.
+    #
+    # Si no existe vocabulario nuevo real que pueda añadirse, REWRITE_QUERY se considera
+    # una acción válida pero no ejecutable para esta Observation y se transforma en
+    # AgenticRetrievalActionUnavailable. Cualquier otro error de reformulación se propaga.
+    #
+    # Si la nueva query se genera correctamente, ejecuta una nueva recuperación usando
+    # esa consulta, mantiene el mismo top_k e incrementa en 1 el contador de reescrituras.
+    #
+    # La reformulación se registra en rewrite_trace únicamente después de que la nueva
+    # recuperación, el grader y la construcción de la nueva Observation hayan terminado
+    # correctamente, evitando guardar como exitosos intentos incompletos o fallidos.
     def _execute_rewrite_query(
         self, rewrite_reason: str, observation: AgenticRetrievalObservation
     ) -> AgenticRetrievalObservation:
@@ -267,18 +283,11 @@ class AgenticRetrievalActionExecutor:
             # E2E-BUG-01 (contract fix): SOLO la condición legítima
             # "sin vocabulario nuevo genuino que incorporar" se traduce a
             # ACTION_UNAVAILABLE -- REWRITE_QUERY era legal según la
-            # Observation, pero no ejecutable con estos datos concretos.
-            # Cualquier otro QueryRewriteError (inputs inválidos,
-            # authorized_sources vacío, violación de contrato) sigue
-            # propagándose como error técnico/contractual real, sin
-            # conversión -- distinguido por el único código estable
-            # disponible en el mensaje (no existe todavía un tipo/campo
-            # estructurado separado en Bloque 3 para esta condición
-            # específica).
+            
             if str(exc).startswith("QUERY_REWRITE_UNAVAILABLE"):
                 raise AgenticRetrievalActionUnavailable(str(exc)) from exc
             raise
-
+            
         effective_query = rewrite["rewritten_query"]
         new_observation = self._run_retrieval_and_build_observation(
             observation=observation,
@@ -294,6 +303,16 @@ class AgenticRetrievalActionExecutor:
         self.rewrite_trace.append(rewrite)
         return new_observation
 
+
+    # Ejecuta la acción ADJUST_TOP_K aumentando la cantidad de resultados que se
+    # solicitarán al retriever, sin modificar la query actual.
+    #
+    # El planner solo decide que debe ajustarse el top_k; no elige su valor concreto.
+    # Python calcula automáticamente el siguiente valor mediante next_top_k, 8*1.5
+    # respetando el máximo permitido por effective_top_k_max. 35
+    #
+    # Después ejecuta una nueva recuperación con el top_k actualizado, mantiene la misma
+    # consulta y conserva sin cambios query_rewrite_count, porque aquí no hubo reescritura.
     def _execute_adjust_top_k(
         self, observation: AgenticRetrievalObservation
     ) -> AgenticRetrievalObservation:
@@ -310,52 +329,80 @@ class AgenticRetrievalActionExecutor:
             new_query_rewrite_count=observation.query_rewrite_count,
         )
 
-    def _run_retrieval_and_build_observation(
-        self,
-        *,
-        observation: AgenticRetrievalObservation,
-        effective_query: str,
-        effective_top_k: int,
-        new_query_rewrite_count: int,
-    ) -> AgenticRetrievalObservation:
-        result = self._retriever.retrieve_more({
-            "claim_id": self._claim_id,
-            "claim_context": {"claim_text": self._claim_text},
-            "allowed_source_filenames": tuple(self._allowed_source_filenames),
-            "query_override": effective_query,
-            "top_k_override": effective_top_k,
-        })
-        candidates = list(result["selected_candidates"])
 
-        grade = grade_evidence(
-            claim_text=self._claim_text, candidates=candidates, thresholds=self._grader_thresholds,
-        )
-        minimum_viable = is_minimum_viable_evidence(
-            candidates=candidates,
-            thresholds=self._minimum_viable_thresholds,
-            authorized_sources=self._allowed_source_filenames,
-        )
+    
+def _run_retrieval_and_build_observation(
+    self,
+    *,
+    observation: AgenticRetrievalObservation,
+    effective_query: str,
+    effective_top_k: int,
+    new_query_rewrite_count: int,
+) -> AgenticRetrievalObservation:
 
-        new_observation = AgenticRetrievalObservation(
-            claim_id=observation.claim_id,
-            claim_text=observation.claim_text,
-            current_query=effective_query,
-            retrieval_round=observation.retrieval_round + 1,
-            current_top_k=effective_top_k,
-            effective_top_k_max=observation.effective_top_k_max,
-            remaining_retrieval_budget=observation.remaining_retrieval_budget - 1,
-            candidate_count=grade["candidate_count"],
-            evidence_ids=_build_evidence_ids(candidates),
-            max_relevance_score=grade["max_relevance_score"],
-            grade_result=grade["grade_result"],
-            reason_codes=grade["reason_codes"],
-            minimum_viable_evidence=minimum_viable,
-            query_rewrite_count=new_query_rewrite_count,
-        )
-        # Contexto actualizado SOLO tras construir la Observation con
-        # éxito -- si AgenticRetrievalObservation.__post_init__ falla
-        # (invariante violado), self._current_candidates no se
-        # actualiza, manteniendo coherencia con la última Observation
-        # realmente válida.
-        self._current_candidates = candidates
-        return new_observation
+    # Ejecuta una nueva recuperación de evidencia usando el claim actual,
+    # las fuentes autorizadas, la query efectiva y el top_k definido por
+    # la acción REWRITE_QUERY o ADJUST_TOP_K.
+    result = self._retriever.retrieve_more({
+        "claim_id": self._claim_id,
+        "claim_context": {"claim_text": self._claim_text},
+        "allowed_source_filenames": tuple(self._allowed_source_filenames),
+        "query_override": effective_query,
+        "top_k_override": effective_top_k,
+    })
+
+    # Extrae de la respuesta del retriever los candidatos seleccionados
+    # que serán evaluados en esta nueva ronda.
+    candidates = list(result["selected_candidates"])
+
+    # Evalúa si la evidencia recuperada es SUFFICIENT o INSUFFICIENT.
+    # También obtiene cantidad de candidatos, score máximo de relevancia
+    # y los reason_codes que explican una posible insuficiencia.
+    grade = grade_evidence(
+        claim_text=self._claim_text,
+        candidates=candidates,
+        thresholds=self._grader_thresholds,
+    )
+
+    # Comprueba si, aunque la evidencia no llegue a ser SUFFICIENT,
+    # todavía cumple el criterio mínimo para poder utilizarse:
+    # al menos un candidato relevante y proveniente de una fuente autorizada.
+    minimum_viable = is_minimum_viable_evidence(
+        candidates=candidates,
+        thresholds=self._minimum_viable_thresholds,
+        authorized_sources=self._allowed_source_filenames,
+    )
+
+    # Construye la nueva Observation con el resultado real de esta ronda.
+    # Cada nueva recuperación:
+    # - incrementa retrieval_round en 1;
+    # - consume una unidad del presupuesto disponible;
+    # - actualiza la query y el top_k utilizados;
+    # - registra la nueva evidencia y el resultado del grader;
+    # - mantiene el contador de rewrites correspondiente a la acción ejecutada.
+    new_observation = AgenticRetrievalObservation(
+        claim_id=observation.claim_id,
+        claim_text=observation.claim_text,
+        current_query=effective_query,
+        retrieval_round=observation.retrieval_round + 1,
+        current_top_k=effective_top_k,
+        effective_top_k_max=observation.effective_top_k_max,
+        remaining_retrieval_budget=observation.remaining_retrieval_budget - 1,
+        candidate_count=grade["candidate_count"],
+        evidence_ids=_build_evidence_ids(candidates),
+        max_relevance_score=grade["max_relevance_score"],
+        grade_result=grade["grade_result"],
+        reason_codes=grade["reason_codes"],
+        minimum_viable_evidence=minimum_viable,
+        query_rewrite_count=new_query_rewrite_count,
+    )
+
+    # Actualiza los candidatos internos del executor únicamente después
+    # de que la nueva Observation haya sido construida y validada con éxito.
+    # Si AgenticRetrievalObservation detecta un estado inválido y lanza un error,
+    # esta línea no se ejecuta y se conserva la evidencia de la última ronda válida.
+    self._current_candidates = candidates
+
+    # Devuelve el nuevo estado observable para que el controller continúe
+    # el ciclo de Agentic Retrieval.
+    return new_observation
