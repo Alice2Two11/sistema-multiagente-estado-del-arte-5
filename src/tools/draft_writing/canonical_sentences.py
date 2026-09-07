@@ -49,7 +49,7 @@ from .claim_identity import (
     default_mint_claim_uid,
     resolve_claim_identity,
 )
-from .artifacts import write_raw_section_output, write_raw_section_validation
+from .artifacts import write_raw_section_output, write_raw_section_validation, write_raw_section_rag_trace
 from .validation import compute_unsupported_numeric_values
 
 # Vocabulario de errores de esta fase -- códigos EXACTOS pedidos,
@@ -782,6 +782,21 @@ def generate_section_canonical_v2(
 
         if raw_dir is not None:
             write_raw_section_output(raw_dir, sid, attempt, raw)
+            # Traza determinista de qué evidencia estaba realmente disponible
+            # (handle -> source_filename/chunk_id) en este intento puntual --
+            # nunca se había conectado antes; sin esto, un INVALID_EVIDENCE_ID
+            # no se podía distinguir entre "alucinación real del LLM" y "hueco
+            # de recall del retrieval" después de los hechos.
+            write_raw_section_rag_trace(raw_dir, sid, attempt, {
+                "available_handles": sorted(
+                    evidence_handle_map.keys(),
+                    key=lambda h: int(h[1:]) if h[1:].isdigit() else h,
+                ),
+                "evidence_by_handle": {
+                    handle: {"source_filename": item[0], "chunk_id": item[1]}
+                    for handle, item in evidence_handle_map.items()
+                },
+            })
 
         try:
             payload = runtime.parse(raw)
