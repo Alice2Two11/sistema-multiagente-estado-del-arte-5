@@ -130,13 +130,14 @@ _NOTEBOOK00_REVIEW_SECTION_LABELS_ES = {
     "prior_work": "trabajo anterior",
 }
 _NOTEBOOK00_REVIEW_SECTION_PATTERNS = [
-    r"\brelated\s+work\b",
+    r"\brelated\s+work(?:s)?\b",
     r"\bliterature\s+review\b",
     r"\bstate\s+of\s+the\s+art\b",
-    r"\bbackground\b",
+    r"\bbackground\s+and\s+related\s+work\b",
     r"\btheoretical\s+background\b",
     r"\bprevious\s+work\b",
     r"\bprior\s+work\b",
+    r"\brelated\s+research\b",
     r"\btrabajos?\s+relacionados?\b",
     r"\brevisión\s+de\s+literatura\b",
     r"\brevision\s+de\s+literatura\b",
@@ -168,9 +169,53 @@ _NOTEBOOK00_RAG_POLICY_REQUIRED_KEYS = {
 }
 
 
+def _verify_notebook00_rag_policy_sync() -> None:
+    """Chequeo de seguridad, no bloqueante si el archivo no existe: si
+    ``/content/proyecto_estado_arte/src/rag_policy.py`` (el que notebook 00
+    genera de verdad en Colab) ya existe en disco, compara sus constantes
+    reales contra la copia hardcodeada de este archivo. Si alguna vez se
+    desincronizan (alguien edita la celda 14 del 00 sin actualizar esta
+    copia), esto lo detecta con un error claro en vez de dejar que 07 use
+    en silencio una política de exclusión desactualizada."""
+    import importlib.util
+
+    real_path = Path("/content/proyecto_estado_arte/src/rag_policy.py")
+    if not real_path.exists():
+        return  # no hay nada que comparar (por ejemplo, en pruebas locales).
+
+    spec = importlib.util.spec_from_file_location("_rag_policy_real_check", real_path)
+    real_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real_module)
+
+    real_patterns = list(getattr(real_module, "REVIEW_SECTION_PATTERNS", []))
+    real_labels = dict(getattr(real_module, "REVIEW_SECTION_LABELS_ES", {}))
+    real_policy_text = getattr(real_module, "RAG_ALLOWED_CONTENT_POLICY", None)
+
+    if real_patterns != _NOTEBOOK00_REVIEW_SECTION_PATTERNS:
+        raise ValueError(
+            "DESINCRONIZACIÓN DETECTADA: REVIEW_SECTION_PATTERNS de "
+            f"{real_path} ya no coincide con la copia hardcodeada en "
+            "verification_orchestrator_runtime.py. Actualiza "
+            "_NOTEBOOK00_REVIEW_SECTION_PATTERNS para que coincida con la "
+            "celda 14 de 00_setup_config.ipynb."
+        )
+    if real_labels != _NOTEBOOK00_REVIEW_SECTION_LABELS_ES:
+        raise ValueError(
+            "DESINCRONIZACIÓN DETECTADA: REVIEW_SECTION_LABELS_ES de "
+            f"{real_path} ya no coincide con la copia hardcodeada en "
+            "verification_orchestrator_runtime.py."
+        )
+    if real_policy_text != _NOTEBOOK00_RAG_ALLOWED_CONTENT_POLICY:
+        raise ValueError(
+            "DESINCRONIZACIÓN DETECTADA: RAG_ALLOWED_CONTENT_POLICY de "
+            f"{real_path} ya no coincide con la copia hardcodeada en "
+            "verification_orchestrator_runtime.py."
+        )
+
+
 def _derive_rag_policy_like_notebook00(raw_rag_policy: Mapping[str, Any]) -> dict[str, Any]:
     """Reproduce ``get_rag_policy()`` real (``src/rag_policy.py``, notebook 00
-    celda 11) a partir de ``active_experiment.json["rag_policy"]`` crudo.
+    celda 14) a partir de ``active_experiment.json["rag_policy"]`` crudo.
 
     NO es un passthrough: el notebook real valida y RESHAPEA la política
     (renombra ``excluded_reference_section_types`` a ``review_section_types``
@@ -180,6 +225,7 @@ def _derive_rag_policy_like_notebook00(raw_rag_policy: Mapping[str, Any]) -> dic
     mismos ``ValueError`` que el módulo real ante una política inválida o
     incompleta — mismos mensajes de validación, mismas condiciones.
     """
+    _verify_notebook00_rag_policy_sync()
 
     if not isinstance(raw_rag_policy, dict) or not raw_rag_policy:
         raise ValueError("RAG_POLICY debe ser un diccionario no vacío.")
