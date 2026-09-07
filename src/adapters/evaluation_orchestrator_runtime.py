@@ -567,8 +567,6 @@ def _run_evaluation_stage(
         )
 
         # A4: input_dependencies completo para la ruta activa (07 directo).
-        # Sin campos exclusivos de 07C (post_correction_recheck_manifest,
-        # etc.) -- ninguno de esos existe en esta ruta.
 
         # Construye el manifest de Stage08 para dejar registrado exactamente
         # qué se evaluó, de dónde vino, con qué modelos/configuración y con qué huellas.
