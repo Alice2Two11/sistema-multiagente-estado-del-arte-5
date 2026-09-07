@@ -137,7 +137,9 @@ class AgenticRetrievalActionExecutor:
         self.rewrite_trace: list[dict[str, Any]] = []
 
 
-    
+    # Expone los candidatos actuales del executor mediante una propiedad de solo lectura.
+    # Devuelve una tupla con copias de los candidatos para evitar que otros módulos
+    # modifiquen directamente el estado interno almacenado en _current_candidates.
     @property
     def current_candidates(self) -> tuple[dict[str, Any], ...]:
         """Integration accessor read-only (Bloque 5) -- copia defensiva
@@ -148,6 +150,16 @@ class AgenticRetrievalActionExecutor:
         tras el ciclo. No modifica la lógica de Bloque 4."""
         return tuple(dict(c) for c in self._current_candidates)
 
+
+    # Comprueba que la Observation recibida corresponda exactamente al contexto
+    # que mantiene este executor antes de ejecutar una acción.
+    # Verifica que:
+    # - el claim_id sea el mismo;
+    # - el claim_text sea el mismo;
+    # - la cantidad de candidatos coincida;
+    # - los evidence_ids correspondan exactamente a los candidatos actuales.
+    # Así se evita que el planner tome una decisión sobre un claim o una evidencia
+    # y que luego el executor aplique esa decisión usando otro contexto distinto.
     def _require_context_matches_observation(self, observation: AgenticRetrievalObservation) -> None:
         """Fail-closed: la Observation que decidió el planner debe
         corresponder EXACTAMENTE al contexto que este executor
@@ -178,17 +190,21 @@ class AgenticRetrievalActionExecutor:
                 "no es la misma evidencia que la acción usaría."
             )
 
+    
+    # Valida que decision_basis sea una justificación permitida para una acción
+    # de mejora y que corresponda realmente a uno de los problemas detectados en la Observation actual.
+    #
+    # Primero comprueba que decision_basis pertenezca al conjunto de valores válidos.
+    # Después exige que empiece con EVIDENCE_INSUFFICIENT_, porque REWRITE_QUERY y
+    # ADJUST_TOP_K solo pueden ejecutarse como respuesta a evidencia insuficiente.
+    #
+    # Finalmente extrae el reason_code asociado y verifica que esté presente en
+    # observation.reason_codes ("LOW_CANDIDATE_COUNT","LOW_SOURCE_DIVERSITY","LOW_RELEVANCE","LOW_COVERAGE"). 
+    # Así se evita ejecutar una acción de mejora usando una justificación que no corresponde al estado real de la evidencia.
+
     def _require_valid_decision_basis(
         self, decision_basis: str, observation: AgenticRetrievalObservation
     ) -> str:
-        """Frontera pública -- no confía ciegamente en el caller.
-        Reutiliza el enum/validador real de Bloque 2 (sin duplicar
-        vocabulario). Rechaza ``EVIDENCE_ACCEPTABLE_DESPITE_GAPS``
-        (exclusivo de ACCEPT_EVIDENCE) y cualquier valor sin el
-        prefijo esperado para acciones de mejora; el reason_code
-        derivado debe pertenecer realmente a
-        ``observation.reason_codes``. Retorna el ``rewrite_reason``
-        (reason_code desnudo) ya validado."""
         try:
             validate_decision_basis(decision_basis)
         except ValueError as exc:
@@ -208,6 +224,8 @@ class AgenticRetrievalActionExecutor:
             )
         return reason_code
 
+
+    
     def __call__(
         self, selected_action: str, decision_basis: str, observation: AgenticRetrievalObservation
     ) -> AgenticRetrievalObservation:
