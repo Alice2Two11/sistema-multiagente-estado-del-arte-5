@@ -114,103 +114,44 @@ def _require_active_experiment_key(active: Mapping[str, Any], key: str) -> Any:
     return active[key]
 
 
-# Copia literal de src/rag_policy.py (notebook 00, celda 11) —
-# REVIEW_SECTION_LABELS_ES, REVIEW_SECTION_PATTERNS y
-# RAG_ALLOWED_CONTENT_POLICY están hardcodeados en esa celda, NO vienen de
-# active_experiment.json; se reproducen aquí verbatim para que
-# _derive_rag_policy_like_notebook00 devuelva exactamente lo mismo que
-# get_rag_policy() real.
-_NOTEBOOK00_REVIEW_SECTION_LABELS_ES = {
-    "related_work": "trabajos relacionados",
-    "literature_review": "revisión de literatura",
-    "state_of_the_art": "estado del arte",
-    "background": "antecedentes",
-    "theoretical_background": "marco teórico / antecedentes teóricos",
-    "previous_work": "trabajo previo",
-    "prior_work": "trabajo anterior",
-}
-_NOTEBOOK00_REVIEW_SECTION_PATTERNS = [
-    r"\brelated\s+work(?:s)?\b",
-    r"\bliterature\s+review\b",
-    r"\bstate\s+of\s+the\s+art\b",
-    r"\bbackground\s+and\s+related\s+work\b",
-    r"\btheoretical\s+background\b",
-    r"\bprevious\s+work\b",
-    r"\bprior\s+work\b",
-    r"\brelated\s+research\b",
-    r"\btrabajos?\s+relacionados?\b",
-    r"\brevisión\s+de\s+literatura\b",
-    r"\brevision\s+de\s+literatura\b",
-    r"\brevisión\s+bibliográfica\b",
-    r"\brevision\s+bibliografica\b",
-    r"\bestado\s+del\s+arte\b",
-    r"\bantecedentes\b",
-    r"\bmarco\s+teórico\b",
-    r"\bmarco\s+teorico\b",
-    r"\btrabajos?\s+previos?\b",
-]
-_NOTEBOOK00_RAG_ALLOWED_CONTENT_POLICY = (
-    "Solo se indexan fragmentos de papers de referencia "
-    "que no pertenezcan a secciones de revisión, antecedentes, "
-    "trabajos relacionados o bibliografía. "
-    "El Ground Truth se reserva exclusivamente para evaluación."
-)
-_NOTEBOOK00_RAG_POLICY_REQUIRED_KEYS = {
-    "exclude_review_sections_from_reference_papers",
-    "excluded_reference_section_types",
-    "ground_truth_usage",
-    "use_ground_truth_for_generation",
-    "use_ground_truth_for_rag",
-    "use_ground_truth_for_verification",
-    "use_ground_truth_for_evaluation",
-    "retrieval_profiles",
-    "indexing",
-    "generation",
-}
+# Ya NO se mantiene ninguna copia hardcodeada de REVIEW_SECTION_LABELS_ES/
+# REVIEW_SECTION_PATTERNS/RAG_ALLOWED_CONTENT_POLICY/required_policy_keys.
+# _load_real_rag_policy_module() carga el archivo REAL que notebook 00
+# genera en Colab (src/rag_policy.py, celda 14) por ruta explícita, sin
+# depender de sys.path -- una sola fuente de verdad, nunca una copia que
+# se pueda desincronizar.
+_REAL_RAG_POLICY_PATH = Path("/content/proyecto_estado_arte/src/rag_policy.py")
 
 
-def _verify_notebook00_rag_policy_sync() -> None:
-    """Chequeo de seguridad, no bloqueante si el archivo no existe: si
-    ``/content/proyecto_estado_arte/src/rag_policy.py`` (el que notebook 00
-    genera de verdad en Colab) ya existe en disco, compara sus constantes
-    reales contra la copia hardcodeada de este archivo. Si alguna vez se
-    desincronizan (alguien edita la celda 14 del 00 sin actualizar esta
-    copia), esto lo detecta con un error claro en vez de dejar que 07 use
-    en silencio una política de exclusión desactualizada."""
+def _load_real_rag_policy_module():
+    """Carga por ruta explícita el rag_policy.py que notebook 00 ya
+    escribió en Colab (celda 14). Nunca hay una copia local que mantener
+    sincronizada -- si el archivo no existe todavía (por ejemplo, porque
+    el notebook 00 no se corrió antes que 07), esto falla con un mensaje
+    claro en vez de usar valores hardcodeados desactualizados.
+
+    rag_policy.py hace ``from config import RAG_POLICY`` en su propio
+    código (import sin ruta, config.py vive en la misma carpeta) -- eso
+    requiere que esa carpeta esté en sys.path, algo que este proceso
+    (corre fuera de Colab, como subproceso aparte) no garantiza por sí
+    solo. Se agrega explícitamente antes de ejecutar el módulo."""
     import importlib.util
+    import sys
 
-    real_path = Path("/content/proyecto_estado_arte/src/rag_policy.py")
-    if not real_path.exists():
-        return  # no hay nada que comparar (por ejemplo, en pruebas locales).
+    if not _REAL_RAG_POLICY_PATH.exists():
+        raise FileNotFoundError(
+            f"No existe {_REAL_RAG_POLICY_PATH} -- ejecuta primero el "
+            "notebook 00_setup_config (celda 14) antes de correr 07."
+        )
 
-    spec = importlib.util.spec_from_file_location("_rag_policy_real_check", real_path)
+    real_src_dir = str(_REAL_RAG_POLICY_PATH.parent)
+    if real_src_dir not in sys.path:
+        sys.path.insert(0, real_src_dir)
+
+    spec = importlib.util.spec_from_file_location("_rag_policy_real", _REAL_RAG_POLICY_PATH)
     real_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(real_module)
-
-    real_patterns = list(getattr(real_module, "REVIEW_SECTION_PATTERNS", []))
-    real_labels = dict(getattr(real_module, "REVIEW_SECTION_LABELS_ES", {}))
-    real_policy_text = getattr(real_module, "RAG_ALLOWED_CONTENT_POLICY", None)
-
-    if real_patterns != _NOTEBOOK00_REVIEW_SECTION_PATTERNS:
-        raise ValueError(
-            "DESINCRONIZACIÓN DETECTADA: REVIEW_SECTION_PATTERNS de "
-            f"{real_path} ya no coincide con la copia hardcodeada en "
-            "verification_orchestrator_runtime.py. Actualiza "
-            "_NOTEBOOK00_REVIEW_SECTION_PATTERNS para que coincida con la "
-            "celda 14 de 00_setup_config.ipynb."
-        )
-    if real_labels != _NOTEBOOK00_REVIEW_SECTION_LABELS_ES:
-        raise ValueError(
-            "DESINCRONIZACIÓN DETECTADA: REVIEW_SECTION_LABELS_ES de "
-            f"{real_path} ya no coincide con la copia hardcodeada en "
-            "verification_orchestrator_runtime.py."
-        )
-    if real_policy_text != _NOTEBOOK00_RAG_ALLOWED_CONTENT_POLICY:
-        raise ValueError(
-            "DESINCRONIZACIÓN DETECTADA: RAG_ALLOWED_CONTENT_POLICY de "
-            f"{real_path} ya no coincide con la copia hardcodeada en "
-            "verification_orchestrator_runtime.py."
-        )
+    return real_module
 
 
 def _derive_rag_policy_like_notebook00(raw_rag_policy: Mapping[str, Any]) -> dict[str, Any]:
@@ -225,12 +166,12 @@ def _derive_rag_policy_like_notebook00(raw_rag_policy: Mapping[str, Any]) -> dic
     mismos ``ValueError`` que el módulo real ante una política inválida o
     incompleta — mismos mensajes de validación, mismas condiciones.
     """
-    _verify_notebook00_rag_policy_sync()
+    real_rag_policy = _load_real_rag_policy_module()
 
     if not isinstance(raw_rag_policy, dict) or not raw_rag_policy:
         raise ValueError("RAG_POLICY debe ser un diccionario no vacío.")
 
-    missing = sorted(_NOTEBOOK00_RAG_POLICY_REQUIRED_KEYS - set(raw_rag_policy))
+    missing = sorted(set(real_rag_policy.required_policy_keys) - set(raw_rag_policy))
     if missing:
         raise ValueError(f"RAG_POLICY está incompleta. Faltan: {missing}")
 
@@ -300,9 +241,9 @@ def _derive_rag_policy_like_notebook00(raw_rag_policy: Mapping[str, Any]) -> dic
         "ground_truth_policy": ground_truth_policy,
         "exclude_review_sections_from_reference_papers": exclude_review_sections,
         "review_section_types": sorted(review_section_types),
-        "review_section_labels_es": dict(_NOTEBOOK00_REVIEW_SECTION_LABELS_ES),
-        "review_section_patterns": list(_NOTEBOOK00_REVIEW_SECTION_PATTERNS),
-        "rag_allowed_content_policy": _NOTEBOOK00_RAG_ALLOWED_CONTENT_POLICY,
+        "review_section_labels_es": dict(real_rag_policy.REVIEW_SECTION_LABELS_ES),
+        "review_section_patterns": list(real_rag_policy.REVIEW_SECTION_PATTERNS),
+        "rag_allowed_content_policy": real_rag_policy.RAG_ALLOWED_CONTENT_POLICY,
         "retrieval_profiles": retrieval_profiles,
         "indexing": indexing_config,
         "generation": rag_generation_config,
@@ -392,7 +333,7 @@ def load_verification_configuration(
     # rag_policy: clave obligatoria (celda 9: "RAG_POLICY" está en el set de
     # dicts no vacíos exigidos). El adaptador NO pasa el dict crudo de
     # active_experiment.json["rag_policy"] tal cual: el notebook real lo
-    # transforma mediante get_rag_policy() (rag_policy.py, celda 11) antes de
+    # transforma mediante get_rag_policy() (rag_policy.py, celda 14) antes de
     # que 07 lo consuma — ver _derive_rag_policy_like_notebook00 más abajo,
     # que reproduce esa transformación literal (mismas claves derivadas,
     # mismas validaciones, mismos valores hardcodeados de
