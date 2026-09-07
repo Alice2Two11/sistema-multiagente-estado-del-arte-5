@@ -30,12 +30,54 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-from src.orchestration.stage_execution import resolve_state_path
 from src.state.pipeline_state import CycleState
 from src.state.state_store import StateStore
 
 WRITER_VERIFIER_CYCLE_NAME = "writer_verifier"
 CYCLE_ROUNDS_DIRECTORY_NAME = "writer_verifier_cycle"
+
+
+def compute_source_tree_hash() -> str:
+    """Hashea el contenido de TODOS los .py de src/ (ordenados, para que
+    el resultado sea determinista) -- captura cualquier cambio real de
+    código, a diferencia de las firmas por etapa (que solo hashean
+    datos/policy y strings de versión mantenidos a mano)."""
+    import hashlib
+
+    repo_root = Path(__file__).resolve().parents[2]  # .../src/orchestration/fresh_start.py -> raíz del repo
+    src_dir = repo_root / "src"
+    hasher = hashlib.sha256()
+    for path in sorted(src_dir.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        hasher.update(str(path.relative_to(repo_root)).encode("utf-8"))
+        hasher.update(path.read_bytes())
+    return hasher.hexdigest()
+
+
+def auto_fresh_start_if_code_changed(project_dir: str | Path) -> "FreshStartReport | None":
+    """Compara el hash actual del código (compute_source_tree_hash) contra
+    el que quedó guardado de la corrida anterior. Si cambió (o es la
+    primera corrida), ejecuta perform_fresh_start() automáticamente y
+    actualiza el hash guardado. Si NO cambió, no hace nada -- el
+    comportamiento normal de SKIPPED_FRESH/attempts_used sigue intacto.
+
+    Nunca es silencioso: si actúa, imprime el mismo reporte que
+    --fresh-start manual. Si no actúa, no imprime nada (para no
+    ensuciar la salida de las corridas normales)."""
+
+    root = Path(project_dir).resolve()
+    hash_file = root / ".last_code_hash.txt"
+    current_hash = compute_source_tree_hash()
+
+    previous_hash = hash_file.read_text(encoding="utf-8").strip() if hash_file.exists() else None
+
+    if previous_hash == current_hash:
+        return None  # el código no cambió desde la corrida anterior -- no se toca nada.
+
+    report = perform_fresh_start(project_dir)
+    hash_file.write_text(current_hash, encoding="utf-8")
+    return report
 
 
 def _now_iso() -> str:
@@ -74,8 +116,12 @@ def perform_fresh_start(project_dir: str | Path) -> FreshStartReport:
     silencioso sin registro).
     """
 
-    state_path, experiment_id, run_id = resolve_state_path(project_dir)
-    store = StateStore(state_path)
+    # ensure_pipeline_state() crea pipeline_state.json si es la primera
+    # corrida de este experimento (todavía no existe) -- fresh-start debe
+    # funcionar tanto en experimentos ya corridos como en uno completamente
+    # nuevo, sin distinguir casos.
+    from src.orchestration.stage_execution import ensure_pipeline_state
+    store = ensure_pipeline_state(project_dir)
     state = store.load()
 
     # 1) attempts_used = 0 en todas las etapas ya registradas en el estado.
@@ -111,7 +157,7 @@ def perform_fresh_start(project_dir: str | Path) -> FreshStartReport:
     store.save(new_state)
 
     # 4) mueve a un lado (nunca borra) las rondas físicas del ciclo, si existen.
-    experiment_dir = state_path.parents[2]  # .../<experiment_id>/05_outputs/00_orchestrator_planner/pipeline_state.json
+    experiment_dir = store.state_path.parents[2]  # .../<experiment_id>/05_outputs/00_orchestrator_planner/pipeline_state.json
     cycle_rounds_dir = experiment_dir / "05_outputs" / CYCLE_ROUNDS_DIRECTORY_NAME
     backed_up_to = None
     if cycle_rounds_dir.exists():
