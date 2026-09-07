@@ -158,6 +158,19 @@ def _parse_args(argv=None):
         action="store_true",
         help="Reejecuta la etapa inicial aunque ya esté COMPLETED y vigente en pipeline_state.json.",
     )
+    parser.add_argument(
+        "--fresh-start",
+        action="store_true",
+        help=(
+            "Antes de correr, reinicia attempts_used de TODAS las etapas, "
+            "el ciclo writer_verifier (06<->07) y limpia pending_execution; "
+            "además mueve a un backup con timestamp las rondas físicas ya "
+            "persistidas en writer_verifier_cycle/ (nunca las borra). "
+            "Usar siempre que se aplicó un cambio de código real antes de "
+            "esta corrida, o si la corrida anterior se interrumpió de "
+            "forma no limpia. Implica --force-rerun automáticamente."
+        ),
+    )
     return parser.parse_args(argv)
 
 # Ejecuta el pipeline desde la terminal, muestra el resultado de cada etapa
@@ -165,12 +178,20 @@ def _parse_args(argv=None):
 def main(argv=None) -> int:
     # Lee los argumentos enviados desde la línea de comandos.
     args = _parse_args(argv)
+
+    force_rerun = args.force_rerun
+    if args.fresh_start:
+        from src.orchestration.fresh_start import perform_fresh_start, print_fresh_start_report
+        report = perform_fresh_start(args.project_dir)
+        print_fresh_start_report(report)
+        force_rerun = True  # --fresh-start siempre implica --force-rerun.
+
     # Ejecuta el pipeline mediante LangGraph con la configuración indicada.
     outcomes = run_pipeline_via_langgraph(
         args.project_dir,
         start_stage=args.start_stage,
         until=args.until,
-        force_rerun=args.force_rerun,
+        force_rerun=force_rerun,
     )
     
     # Recorre los resultados de cada etapa ejecutada.
