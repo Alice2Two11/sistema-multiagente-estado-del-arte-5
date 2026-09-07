@@ -1,74 +1,63 @@
-"""Agentic Retrieval (Stage 07, pre-verificación) -- Bloque 4
-(corregido): executor real de acciones REWRITE_QUERY/ADJUST_TOP_K.
+"""Agentic Retrieval de la Etapa 07 -- Bloque 4: executor de las acciones
+REWRITE_QUERY y ADJUST_TOP_K.
 
-Implementa exactamente la interfaz ya congelada de Bloque 2 (ampliada
-en la ronda anterior con ``decision_basis``, autorizada explícitamente):
+Este módulo ejecuta realmente la acción elegida por el controller y devuelve una
+nueva AgenticRetrievalObservation con el resultado actualizado del ciclo.
 
-    execute_action_fn(selected_action, decision_basis, observation)
-    -> nueva AgenticRetrievalObservation
+Para REWRITE_QUERY:
+- valida el decision_basis recibido;
+- utiliza generate_query_rewrite para construir una nueva consulta;
+- ejecuta una nueva recuperación con esa query;
+- vuelve a evaluar la evidencia con el grader;
+- construye la nueva Observation.
 
-Orquesta, sin reimplementar ninguna lógica ya cerrada:
-    Bloque 3 (``generate_query_rewrite``) para REWRITE_QUERY
-    Bloque 1 (``config.next_top_k``) para el valor de ADJUST_TOP_K
-    ``Agent07ChromaRetriever.retrieve_more`` REAL (con los overrides
-        de Bloque 4) para la recuperación
-    Bloque 1 (``grade_evidence``/``is_minimum_viable_evidence``) para
-        construir la nueva Observation
-    Bloque 2 (``AGENTIC_DECISION_BASIS_VALUES``/``validate_decision_
-        basis``) para validar decision_basis -- REUTILIZADO, no
-        duplicado (corrección de esta ronda).
+Para ADJUST_TOP_K:
+- calcula el siguiente valor permitido de top_k mediante next_top_k;
+- ejecuta una nueva recuperación manteniendo la misma query;
+- vuelve a evaluar la evidencia;
+- construye la nueva Observation.
 
-Correcciones sobre la versión anterior (ronda de cierre de Bloque 4):
-1. Coherencia contexto/Observation: antes de ejecutar cualquier acción,
-   se exige ``observation.claim_id == self._claim_id``,
-   ``observation.claim_text == self._claim_text``, y que
-   ``observation.candidate_count``/``observation.evidence_ids``
-   correspondan EXACTAMENTE a ``self._current_candidates`` (no solo
-   misma longitud) -- garantiza que la Observation que decidió el
-   planner es la misma evidencia que la acción realmente usará.
-2. ``decision_basis`` se valida contra el enum real de Bloque 2
-   (``AGENTIC_DECISION_BASIS_VALUES``/``validate_decision_basis``,
-   importados, no duplicados) antes de convertirlo a ``rewrite_reason``
-   -- rechaza ``EVIDENCE_ACCEPTABLE_DESPITE_GAPS`` (exclusivo de
-   ACCEPT_EVIDENCE) y cualquier valor sin el prefijo
-   ``EVIDENCE_INSUFFICIENT_``; el reason_code derivado debe pertenecer
-   a ``observation.reason_codes``.
-3. ``rewrite_trace`` solo registra un rewrite DESPUÉS de que retrieval +
-   grade + construcción de la Observation tuvieron éxito completo -- si
-   el retriever falla tras generar el rewrite, la traza permanece sin
-   ese intento (nunca mezcla intentos fallidos con rewrites realmente
-   ejecutados).
+El executor no reimplementa la lógica de otros bloques, sino que reutiliza:
+- generate_query_rewrite para reformular consultas;
+- next_top_k para aumentar el número de resultados;
+- Agent07ChromaRetriever.retrieve_more para recuperar evidencia;
+- grade_evidence e is_minimum_viable_evidence para evaluar lo recuperado;
+- las validaciones del controller para comprobar decision_basis.
 
-``evidence_ids`` -- auditoría confirmada (Bloque 4, punto G): el
-retriever real deduplica candidatos por ``(source_filename, chunk_id)``
-(``seen_pairs`` en ``verification_incremental_retriever.py``);
-``chunk_id`` NO es globalmente único entre distintos papers. Stage 07
-posteriormente crea su propio ``evidence_id`` canónico
-(``evidence_selection.py``, ``f"E{n:02d}"``) para la selección
-científica -- DISTINTO y POSTERIOR, nunca confundido ni reutilizado
-aquí. Se usa la identidad compuesta, mismo criterio que el dedupe
-interno del retriever:
+Antes de ejecutar una acción, verifica que la Observation recibida corresponda
+exactamente al claim y a los candidatos que mantiene esta instancia. Esto evita
+que el planner tome una decisión sobre una evidencia y que luego la acción se
+ejecute utilizando otra distinta.
 
-    evidence_ids = f"{source_filename}::{chunk_id}"
+La identidad de cada candidato se representa mediante la combinación:
 
-``decision_basis`` llega EXACTAMENTE como lo resolvió el controller de
-Bloque 2 (respuesta real validada del planner, o el valor determinista
-de Python cuando el planner no fue consultado) -- se usa directamente
-como ``rewrite_reason`` de Bloque 3 (tras validarse), sin re-derivarlo
-desde ``observation.reason_codes``.
+    source_filename::chunk_id
 
-Estado explícito por instancia (nunca globals): cada
-``AgenticRetrievalActionExecutor`` mantiene su propio contexto por
-claim (candidatos actuales, fuentes autorizadas, retriever, umbrales,
-traza de rewrites) -- auditable, sin variables compartidas entre
-instancias/claims.
+porque chunk_id puede repetirse entre papers distintos. Esta identidad se utiliza
+solo dentro del ciclo de recuperación y no debe confundirse con los evidence_id
+canónicos que Stage 07 asigna posteriormente durante la selección científica.
 
-Presupuesto: cada acción consume exactamente 1
-``retrieval_round``/``remaining_retrieval_budget`` (contrato ya
-cerrado de Bloque 2) -- este módulo NO crea ningún contador nuevo, y
-NO consume todavía el presupuesto interno de
-``VerificationAgent.verify_claim`` (ese acoplamiento pertenece al
-wiring posterior, fuera de Bloque 4)."""
+Cuando se ejecuta REWRITE_QUERY, decision_basis se utiliza para identificar la
+causa real que motivó la reformulación. Solo se aceptan motivos de insuficiencia
+que estén presentes en los reason_codes de la Observation actual.
+
+La traza de rewrites se actualiza únicamente después de que la reformulación,
+la nueva recuperación, la evaluación de evidencia y la construcción de la nueva
+Observation hayan terminado correctamente. Así no se registran como ejecutados
+intentos que fallaron antes de completar el ciclo.
+
+Cada instancia del executor mantiene de forma independiente el contexto de un
+claim: candidatos actuales, fuentes autorizadas, retriever, umbrales y traza de
+reescrituras. No utiliza variables globales compartidas entre claims.
+
+Cada acción de mejora consume exactamente una ronda de recuperación y una unidad
+del presupuesto disponible. Este módulo reutiliza el presupuesto existente del
+controller y no crea contadores adicionales.
+
+En resumen, este bloque convierte la decisión abstracta del controller
+(REWRITE_QUERY o ADJUST_TOP_K) en una nueva recuperación real de evidencia y
+devuelve el estado actualizado necesario para continuar Agentic Retrieval.
+"""
 
 from __future__ import annotations
 
@@ -92,20 +81,21 @@ class ActionExecutorError(ValueError):
     """Fail-closed: incoherencia entre el contexto del executor y la
     Observation recibida, o decision_basis inválido/incoherente."""
 
-
 def _build_evidence_ids(candidates: list[dict[str, Any]]) -> tuple[str, ...]:
-    """Identidad compuesta ``source_filename::chunk_id`` -- mismo
-    criterio que el dedupe interno del retriever (``seen_pairs``), NUNCA
-    confundido con el ``evidence_id`` canónico posterior de Stage 07
-    (``evidence_selection.py``)."""
     return tuple(f"{c['source_filename']}::{c['chunk_id']}" for c in candidates)
 
 
-class AgenticRetrievalActionExecutor:
-    """Contexto explícito y auditable por claim -- construye el callable
-    ``execute_action_fn`` que consume ``run_agentic_retrieval_cycle``
-    (Bloque 2)."""
 
+# Inicializa el executor de Agentic Retrieval para un claim concreto y valida
+# que todo el contexto necesario para ejecutar REWRITE_QUERY o ADJUST_TOP_K
+# tenga una estructura válida antes de comenzar el ciclo.
+#
+# Comprueba que:
+# - claim_id y claim_text sean textos reales no vacíos;
+# - allowed_source_filenames sea un conjunto no vacío de nombres de fuentes válidos;
+# - initial_candidates sea una lista.
+
+class AgenticRetrievalActionExecutor:
     def __init__(
         self,
         *,
@@ -137,7 +127,6 @@ class AgenticRetrievalActionExecutor:
             raise ActionExecutorError(
                 f"initial_candidates debe ser list, recibido {type(initial_candidates).__name__}."
             )
-
         self._retriever = retriever
         self._allowed_source_filenames = frozenset(allowed_source_filenames)
         self._claim_id = claim_id
@@ -145,11 +134,10 @@ class AgenticRetrievalActionExecutor:
         self._current_candidates: list[dict[str, Any]] = list(initial_candidates)
         self._grader_thresholds = grader_thresholds or DEFAULT_GRADER_THRESHOLDS
         self._minimum_viable_thresholds = minimum_viable_thresholds or DEFAULT_MINIMUM_VIABLE_THRESHOLDS
-        # Traza auditable de rewrites -- solo registra intentos que
-        # completaron el ciclo con éxito (rewrite + retrieval + grade +
-        # Observation construida) -- ver _execute_rewrite_query.
         self.rewrite_trace: list[dict[str, Any]] = []
 
+
+    
     @property
     def current_candidates(self) -> tuple[dict[str, Any], ...]:
         """Integration accessor read-only (Bloque 5) -- copia defensiva
