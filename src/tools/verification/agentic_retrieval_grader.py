@@ -1,33 +1,33 @@
-"""Agentic Retrieval (Stage 07, pre-verificación) -- Bloque 1: grader
-determinista puro.
+"""Agentic Retrieval de la Etapa 07 -- Bloque 1: evaluación automática de la evidencia recuperada.
 
-``GRADE_EVIDENCE`` -- decisión automática, NUNCA del planner (ver
-diseño acordado: solo RETRIEVE/GRADE_EVIDENCE son consecuencias
-obligatorias; REWRITE_QUERY/ADJUST_TOP_K/ACCEPT_EVIDENCE son las
-únicas acciones planner-seleccionables, en un bloque posterior).
+Este módulo implementa GRADE_EVIDENCE, que determina de forma automática si la
+evidencia recuperada para un claim es SUFFICIENT o INSUFFICIENT.
 
-Determinista y auditable, sin LLM -- recomendación ya aprobada frente
-a un grader LLM (evita una cadena de juicios de alucinación
-compuestos). ``CONTRADICTORY`` excluido: esa evaluación exige
-contratos que solo ``VerificationAgent.verify_claim`` tiene
-(``contradiction_type``/``contradiction_evidence_ids``).
+La decisión es determinística y no interviene el planner ni ningún LLM. El grader
+evalúa la evidencia mediante reglas programadas y genera reason_codes cuando detecta
+problemas como pocos candidatos, baja diversidad de fuentes, baja relevancia o
+cobertura insuficiente.
 
-Los 4 reason codes usan exclusivamente campos que ya existen en la
-salida real de ``Agent07ChromaRetriever.retrieve_more``
-(``source_filename``, ``chunk_id``, ``text``,
-``native_scores_by_retriever["chroma"]``) -- ninguno requiere
-metadata nueva.
+GRADE_EVIDENCE no decide qué hacer después. Su función es únicamente evaluar la
+calidad y suficiencia de la evidencia. Las decisiones posteriores, como
+REWRITE_QUERY, ADJUST_TOP_K o ACCEPT_EVIDENCE, se gestionan en el controller
+de Agentic Retrieval.
 
-CONTRACT-FIX: ``extract_candidate_relevance_score`` es el extractor
-CANÓNICO y único de la señal de relevancia -- corrige un bug real
-donde tanto este módulo como Bloque 3 asumían una clave ``"score"``
-directa que el retriever real nunca produce (el campo real es
-``native_scores_by_retriever["chroma"]``). Bloque 3 importa esta misma
-función, no reimplementa la extracción.
+La contradicción no se evalúa en este bloque porque requiere información adicional
+que se procesa posteriormente en VerificationAgent.verify_claim, como
+contradiction_type y contradiction_evidence_ids.
 
-Este módulo es puro: no importa nada de ``verification_runtime.py``,
-``verification_agent.py``, ni del retriever -- recibe candidatos y
-texto de claim ya materializados, sin efectos secundarios."""
+El grader utiliza únicamente información que ya entrega el retriever, como:
+source_filename, chunk_id, text y native_scores_by_retriever["chroma"].
+
+La relevancia de cada candidato se obtiene mediante
+extract_candidate_relevance_score, que actúa como función única para extraer
+correctamente el score de Chroma y evitar que otros módulos interpreten el campo
+de relevancia de forma diferente.
+
+Este módulo es independiente del runtime y del agente verificador: recibe el claim
+y los candidatos ya recuperados, los evalúa y devuelve el resultado sin modificar
+otros componentes del sistema."""
 
 from __future__ import annotations
 
@@ -62,19 +62,21 @@ def _extract_terms(text: str) -> set[str]:
 
 
 def _require_valid_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    """Validador mínimo, reutilizado por ``grade_evidence``/
-    ``is_minimum_viable_evidence``/``_lexical_overlap_ratio`` -- el
-    mismo principio fail-closed ya aplicado a
-    ``extract_candidate_relevance_score`` para el score.
 
-    Bloque 1 consume un SUBCONJUNTO del schema canónico completo del
-    candidate (no usa ``chunk_id`` en ningún cálculo de sus métricas):
-    exige ``candidate`` dict real, ``source_filename`` str real no
-    vacío, ``text`` str real no vacío. La relevancia se valida por
-    separado vía ``extract_candidate_relevance_score`` en cada punto
-    donde se usa. Sin ``str(...)`` para corregir entradas inválidas --
-    un ``source_filename=123`` o ``text=["foo","bar"]`` se rechaza, no
-    se convierte silenciosamente."""
+    """Valida la estructura mínima que debe tener cada candidato de evidencia antes
+    de usarlo en las funciones de evaluación del grader.
+    
+    Este validador es reutilizado por grade_evidence,
+    is_minimum_viable_evidence y _lexical_overlap_ratio para comprobar que
+    los campos básicos del candidato sean válidos antes de calcular métricas.
+    
+    La puntuación de relevancia no se valida aquí, sino mediante
+    extract_candidate_relevance_score en los puntos donde realmente se necesita.
+    
+    La validación es estricta: no convierte automáticamente valores incorrectos
+    con str(...). Por ejemplo, source_filename=123 o text=["foo", "bar"] se
+    rechazan en lugar de transformarse silenciosamente en texto."""
+    
     if not isinstance(candidate, dict):
         raise TypeError(f"candidate debe ser dict real, recibido {type(candidate).__name__}.")
     source_filename = candidate.get("source_filename")
@@ -92,8 +94,8 @@ def _require_valid_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def _lexical_overlap_ratio(claim_text: str, candidates: list[dict[str, Any]]) -> float:
-    """Fracción de términos del claim que aparecen literalmente en AL
-    MENOS UN candidato (unión de todos los textos de candidatos)."""
+    """Calcula qué proporción de los términos del claim aparece literalmente
+    en al menos uno de los textos recuperados como evidencia."""
     claim_terms = _extract_terms(claim_text)
     if not claim_terms:
         return 0.0
@@ -105,38 +107,23 @@ def _lexical_overlap_ratio(claim_text: str, candidates: list[dict[str, Any]]) ->
 
 
 def extract_candidate_relevance_score(candidate: dict[str, Any]) -> float:
-    """Extractor CANÓNICO y ÚNICO de la señal de relevancia de un
-    candidato -- usado tanto por Bloque 1 como por Bloque 3 (Bloque 3
-    lo importa directamente, no reimplementa la extracción).
-
-    CONTRACT-FIX (esta ronda): corrige un bug contractual real --
-    ``candidate.get("score", 0.0)`` asumía una clave ``"score"`` que
-    el retriever real (``Agent07ChromaRetriever.retrieve_more``,
-    ``verification_incremental_retriever.py``) NUNCA produce. El
-    campo real, confirmado por lectura directa del retriever, es:
-
-        candidate["native_scores_by_retriever"]["chroma"] == 1.0 - distance
-
-    Se preserva exactamente la misma métrica que ya se pretendía usar
-    (``1.0 - distance``) -- solo se corrige el acceso al campo, nunca
-    se sustituye por ``fused_rrf_score`` (sin evidencia contractual de
-    que esa fuera la señal aprobada).
-
-    Contrato fail-closed, sin ``.get(..., 0.0)`` ni ningún fallback:
-    - ``candidate`` debe ser dict.
-    - ``native_scores_by_retriever`` debe existir y ser un mapping
-      (``dict``).
-    - la clave ``"chroma"`` debe existir dentro de él.
-    - el valor debe ser numérico real (``int``/``float``), ``bool``
-      rechazado, y finito (rechaza NaN/+inf/-inf -- de otro modo
-      evadirían silenciosamente cualquier comparación de threshold,
-      ``NaN < x``/``NaN >= x`` son ambas ``False`` en IEEE 754).
-    - NO se impone rango ``[0,1]`` -- no está contractualmente
-      confirmado.
-
-    Si falta el score nativo de Chroma o el schema es inválido, eso es
-    una violación del contrato del candidato -- NUNCA se interpreta
-    como relevancia igual a cero."""
+    """Extrae de forma única y consistente la puntuación de relevancia de un
+    candidato, reutilizando la misma lógica en los distintos bloques que la necesitan.
+    
+    La relevancia se obtiene del score nativo de Chroma almacenado en
+    native_scores_by_retriever["chroma"], que corresponde a la señal calculada por
+    el retriever. No se utiliza fused_rrf_score como sustituto.
+    
+    La validación es estricta:
+    - candidate debe ser un diccionario;
+    - native_scores_by_retriever debe existir y ser un mapping válido;
+    - debe existir la clave "chroma";
+    - el valor debe ser numérico, no booleano y además finito.
+    
+    No se aplican valores por defecto ni conversiones silenciosas. Si el score nativo
+    de Chroma falta o tiene una estructura inválida, se considera una violación del
+    contrato del candidato y se genera un error en lugar de asumir relevancia cero."""
+    
     if not isinstance(candidate, dict):
         raise TypeError(f"candidate debe ser dict, recibido {type(candidate).__name__}.")
     if "native_scores_by_retriever" not in candidate:
@@ -176,23 +163,21 @@ def grade_evidence(
     candidates: list[dict[str, Any]],
     thresholds: dict | None = None,
 ) -> dict[str, Any]:
-    """Evalúa si ``candidates`` (salida ya materializada de
-    ``retrieve_more``, lista de dicts con al menos ``source_filename``/
-    ``text``/``native_scores_by_retriever``) es suficiente para pasar
-    a verificación.
-
-    Retorna:
-        {
-            "grade_result": "SUFFICIENT" | "INSUFFICIENT",
-            "reason_codes": tuple[str, ...],  # vacío si SUFFICIENT
-            "candidate_count": int,
-            "source_diversity": int,
-            "max_relevance_score": float,
-            "lexical_overlap_ratio": float,
-        }
-
-    Determinista: mismos inputs -> mismo output, siempre. No invoca
-    ningún LLM ni tiene estado mutable entre llamadas.
+    """Evalúa si la evidencia recuperada para un claim es suficiente antes de pasar
+    a la etapa de verificación.
+    
+    A partir de los candidatos recuperados, calcula de forma automática:
+    - cantidad total de candidatos;
+    - diversidad de fuentes;
+    - mayor puntuación de relevancia encontrada;
+    - proporción de términos del claim presentes en la evidencia.
+    
+    Con estos valores determina si la evidencia es SUFFICIENT o INSUFFICIENT.
+    Cuando es insuficiente, también devuelve los reason_codes que indican qué
+    criterios no se cumplieron.
+    
+    La evaluación es determinística: con los mismos candidatos y el mismo claim
+    siempre produce el mismo resultado, sin utilizar LLM ni mantener estado entre llamadas.
     """
     if thresholds is None:
         thresholds = DEFAULT_GRADER_THRESHOLDS
@@ -200,11 +185,11 @@ def grade_evidence(
 
     candidates = [_require_valid_candidate(c) for c in candidates]
 
-    candidate_count = len(candidates)
-    source_diversity = len({c["source_filename"] for c in candidates})
-    scores = [extract_candidate_relevance_score(c) for c in candidates]
+    candidate_count = len(candidates) #candidatos fueron recuperados
+    source_diversity = len({c["source_filename"] for c in candidates}) #cuántas fuentes distintas hay
+    scores = [extract_candidate_relevance_score(c) for c in candidates] #toma el score de relevancia más alto entre todas las evidencias recuperadas (verification_incremental_retriever.py) similitud de coseno
     max_relevance_score = max(scores) if scores else 0.0
-    lexical_overlap_ratio = _lexical_overlap_ratio(claim_text, candidates)
+    lexical_overlap_ratio = _lexical_overlap_ratio(claim_text, candidates) #qué proporción de los términos del claim aparece literalmente en los textos de la evidencia recuperada (_lexical_overlap_ratio)
 
     reason_codes: list[str] = []
 
@@ -245,21 +230,24 @@ def is_minimum_viable_evidence(
     thresholds: dict,
     authorized_sources: frozenset[str] | set[str],
 ) -> bool:
-    """Definición objetiva de ``minimum_viable_evidence`` -- MÁS LAXA
-    que ``grade_evidence`` (SUFFICIENT): solo exige que exista al menos
-    un candidato mínimamente plausible Y de una fuente REALMENTE
-    autorizada (verificado por pertenencia explícita a
-    ``authorized_sources``, no solo por tener un ``source_filename``
-    no vacío -- nunca se asume silenciosamente que el caller ya filtró
-    por autorización). Usada exclusivamente por el controller (bloque
-    posterior) cuando el presupuesto de retrieval se agota, para
-    decidir determinísticamente entre ACCEPT_EVIDENCE/FINISH_UNRESOLVED
-    -- nunca consultada al planner.
-
-    El candidato que satisface "viable" debe cumplir AMBAS condiciones
-    a la vez (relevancia mínima Y fuente autorizada) -- no basta con
-    que existan candidatos relevantes por un lado y candidatos
-    autorizados por otro, sin relación entre sí."""
+    """Define cuándo una evidencia puede considerarse mínimamente viable.
+    Este criterio es más flexible que el usado por grade_evidence para declarar
+    la evidencia como SUFFICIENT. Aquí no se exige cumplir todos los criterios de
+    suficiencia, sino encontrar al menos un candidato que pueda seguir utilizándose
+    como evidencia básica.
+    
+    Para que un candidato sea considerado viable debe cumplir al mismo tiempo:
+    - alcanzar la relevancia mínima establecida;
+    - pertenecer a una fuente explícitamente autorizada en authorized_sources.
+    
+    No basta con que exista un candidato relevante y, por separado, otro candidato
+    autorizado: ambas condiciones deben cumplirse sobre la misma evidencia.
+    
+    Este criterio lo utiliza únicamente el controller cuando se agota el presupuesto
+    de recuperación. En ese momento decide automáticamente si acepta la evidencia
+    disponible con ACCEPT_EVIDENCE o si finaliza el claim como FINISH_UNRESOLVED,
+    sin consultar al planner."""
+    
     thresholds = validate_minimum_viable_thresholds(thresholds)
     if not isinstance(authorized_sources, (frozenset, set)):
         raise TypeError(
