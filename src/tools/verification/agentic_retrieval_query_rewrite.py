@@ -1,65 +1,13 @@
-"""Agentic Retrieval (Stage 07, pre-verificación) -- Bloque 3
-(corregido, ronda 2): REWRITE_QUERY real + guardrails de query drift.
+"""Agentic Retrieval de la Etapa 07 -- Bloque 3: reformulación determinística
+de consultas con control de desviación semántica.
 
-Alcance exclusivo de este bloque: generar y validar una reformulación
-de ``current_query``, de forma completamente aislada -- NO ejecuta
-retrieval, NO toca ``verification_runtime.py``/``verification_agent.py``/
-``verification_incremental_retriever.py``, NO modifica ningún contador
-del controller (``query_rewrite_count``/``retrieval_round``/
-``remaining_retrieval_budget``/``current_top_k``/``effective_top_k_max``
--- esos los produce el controller/action adapter de un bloque
-posterior, consumiendo el resultado de este módulo).
+Este módulo se encarga únicamente de generar y validar una nueva versión de
+current_query cuando el controller selecciona REWRITE_QUERY.
 
-Contrato real confirmado antes de implementar (solo lectura, sin
-modificar nada):
-- Query inicial de Stage 07: ``claim_text``/``original_claim_text``
-  literal (``verification_incremental_retriever.py:81-85``), sin
-  transformación.
-- ``retrieve_more(self, request)`` NO acepta hoy ningún campo de query
-  override -- siempre deriva ``claim_text`` internamente. Bloque 4
-  deberá adaptar esto; no se toca aquí.
-- El retriever real usa ``allowed_source_filenames``/``allowed_sources``
-  para el mismo concepto que aquí llamamos ``authorized_sources``
-  (Bloque 1/2) -- discrepancia de nomenclatura documentada, no
-  resuelta en este bloque.
-- Señal de ranking: CONTRACT-FIX (esta ronda) -- el campo ``score``
-  usado hasta ahora NUNCA existió como clave directa en el candidato
-  real. El campo real, confirmado por lectura directa del retriever,
-  es ``candidate["native_scores_by_retriever"]["chroma"]`` (== ``1.0 -
-  distance``). Se corrige el ACCESO al campo, preservando exactamente
-  la misma métrica -- nunca sustituida por ``fused_rrf_score`` (sin
-  evidencia contractual de que fuera la señal aprobada). Extraída
-  mediante ``extract_candidate_relevance_score`` (extractor canónico
-  de Bloque 1, importado aquí -- nunca reimplementado).
-
-Estrategia de generación: DETERMINISTA POR REGLAS, sin LLM -- decisión
-ya aprobada. No se introduce ningún modelo nuevo.
-
-Selección de términos por RELEVANCIA, no alfabética (corrección de
-esta ronda): candidatos autorizados ordenados por ``score`` DESCENDENTE
-(tie-break determinista: ``source_filename`` ASC, luego ``chunk_id``
-ASC), términos nuevos extraídos candidate por candidate en ese orden,
-preservando primer orden de aparición útil, hasta ``max_new_terms``.
-Nunca se une todo el vocabulario en un set antes de priorizar --
-eso destruiría la procedencia/ranking.
-
-Estrategia ADITIVA, impuesta por el validador: el rewrite nunca elimina
-contenido de ``previous_query`` -- todos sus términos y números deben
-seguir presentes en ``rewritten_query``.
-
-Operación pública atómica: ``generate_query_rewrite`` SIEMPRE valida su
-propio resultado antes de retornarlo. ``validate_query_rewrite`` es
-TAMBIÉN fail-closed por sí misma (corrección de esta ronda) -- no
-depende de haber sido invocada exclusivamente desde
-``generate_query_rewrite``; endurece sus propios inputs
-(``previous_query``/``claim_text``/``max_length``) al entrar.
-
-Preservación semántica: de las propiedades pedidas originalmente, solo
-son determinísticamente verificables con confianza: preservación
-ADITIVA completa de todos los términos/números de ``previous_query``,
-y no introducción de números nuevos no autorizados. El resto se
-declara explícitamente en ``NOT_DETERMINISTICALLY_ENFORCEABLE``.
-"""
+Este bloque modifica exclusivamente la consulta de búsqueda para
+intentar recuperar evidencia más útil, manteniendo controles determinísticos
+que evitan perder información del claim o introducir contenido numérico no
+respaldado."""
 
 from __future__ import annotations
 
@@ -101,15 +49,12 @@ class QueryRewriteError(ValueError):
     """El rewrite generado o propuesto viola un guardrail de query
     drift, o no es posible producir uno real -- fail-closed."""
 
-
 def _normalize_for_equivalence(text: str) -> str:
     collapsed = re.sub(r"[^\w\s]", "", text.lower())
     return re.sub(r"\s+", " ", collapsed).strip()
 
-
 def _extract_numbers(text: str) -> set[str]:
     return set(_NUMBER_PATTERN.findall(text))
-
 
 def _require_nonempty_str(value: Any, name: str) -> str:
     if not isinstance(value, str):
@@ -117,7 +62,6 @@ def _require_nonempty_str(value: Any, name: str) -> str:
     if not value.strip():
         raise QueryRewriteError(f"{name} no puede estar vacío.")
     return value
-
 
 def _require_reason_codes(value: Any) -> tuple[str, ...]:
     if not isinstance(value, tuple):
@@ -135,7 +79,6 @@ def _require_reason_codes(value: Any) -> tuple[str, ...]:
         raise QueryRewriteError(f"reason_codes contiene duplicados: {value!r}.")
     return value
 
-
 def _require_rewrite_reason(value: Any, reason_codes: tuple[str, ...]) -> str:
     if not isinstance(value, str):
         raise QueryRewriteError(f"rewrite_reason debe ser str real, recibido {type(value).__name__}.")
@@ -150,7 +93,6 @@ def _require_rewrite_reason(value: Any, reason_codes: tuple[str, ...]) -> str:
             "(decision_basis real del planner de Bloque 2), no elegirse por posición."
         )
     return value
-
 
 def _require_authorized_sources(value: Any) -> frozenset[str] | set[str]:
     if not isinstance(value, (frozenset, set)):
@@ -167,18 +109,17 @@ def _require_authorized_sources(value: Any) -> frozenset[str] | set[str]:
         if not isinstance(source, str) or not source.strip():
             raise QueryRewriteError(f"authorized_sources contiene un elemento inválido: {source!r}.")
     return value
-
+  
 
 def _require_candidates(value: Any) -> list[dict[str, Any]]:
-    """Endurecido (CONTRACT-FIX de esta ronda): source_filename/chunk_id/
-    text/score son OBLIGATORIOS -- confirmado que el retriever real
-    (``verification_incremental_retriever.py``) siempre los produce.
-    Sin coacción vía ``str(...)`` ni fallbacks ``.get(..., default)``.
-
-    El score se valida vía ``extract_candidate_relevance_score``
-    (extractor canónico, importado de Bloque 1 -- no reimplementado
-    aquí) -- valida el schema real ``native_scores_by_retriever
-    ["chroma"]``, nunca una clave ``"score"`` inexistente."""
+    """Valida estrictamente que cada candidato contenga los campos obligatorios
+    source_filename, chunk_id, text y una puntuación de relevancia válida.
+    No convierte ni completa automáticamente valores incorrectos: si falta un campo,
+    tiene un tipo inválido o viene vacío, el candidato se rechaza.
+    La relevancia se obtiene mediante extract_candidate_relevance_score, reutilizando
+    el extractor canónico del Bloque 1 para leer correctamente
+    native_scores_by_retriever["chroma"], sin asumir una clave "score" directa."""
+    
     if not isinstance(value, list):
         raise QueryRewriteError(f"candidates debe ser list, recibido {type(value).__name__}.")
     for candidate in value:
@@ -195,12 +136,6 @@ def _require_candidates(value: Any) -> list[dict[str, Any]]:
             raise QueryRewriteError(
                 f"candidate.text debe ser str real no vacío, recibido {text!r} ({type(text).__name__})."
             )
-        # score OBLIGATORIO -- participa en el ranking determinista;
-        # extract_candidate_relevance_score ya lanza (ValueError/
-        # TypeError de Bloque 1) si native_scores_by_retriever/"chroma"
-        # está ausente o mal formado -- se re-envuelve en
-        # QueryRewriteError para mantener un único tipo de excepción
-        # público de este módulo.
         try:
             extract_candidate_relevance_score(candidate)
         except (TypeError, ValueError) as exc:
@@ -240,15 +175,13 @@ def _require_positive_int(value: Any, name: str) -> int:
 def _rank_authorized_candidates(
     candidates: list[dict[str, Any]], authorized_sources: frozenset[str] | set[str]
 ) -> list[dict[str, Any]]:
-    """Filtra a solo autorizados y ordena por relevancia nativa de Chroma
-    DESCENDENTE (``extract_candidate_relevance_score``, extractor
-    canónico -- nunca reimplementado aquí), con tie-break determinista
-    (source_filename ASC, chunk_id ASC) -- preserva procedencia/ranking,
-    nunca une en un set antes de esto.
-
-    ``source_filename``/``chunk_id`` ya fueron validados como str reales
-    no vacíos por ``_require_candidates`` -- se acceden directamente,
-    sin ``.get(..., "")``."""
+    """Filtra los candidatos para conservar únicamente evidencias provenientes de
+    fuentes autorizadas y las ordena de mayor a menor según su relevancia en Chroma.
+    La puntuación se obtiene mediante extract_candidate_relevance_score, reutilizando
+    el extractor canónico del Bloque 1.
+    Si dos candidatos tienen el mismo score, se aplica un desempate determinístico:
+    primero por source_filename y luego por chunk_id en orden ascendente.
+    """
     authorized = [c for c in candidates if c["source_filename"] in authorized_sources]
     return sorted(
         authorized,
@@ -264,8 +197,7 @@ def _collect_authorized_candidate_content(
     candidates: list[dict[str, Any]], authorized_sources: frozenset[str] | set[str]
 ) -> tuple[set[str], set[str]]:
     """Retorna (términos, números) presentes en candidatos AUTORIZADOS
-    -- usado solo para validación de pertenencia (orden irrelevante
-    aquí), no para la selección/ranking en generación."""
+    """
     terms: set[str] = set()
     numbers: set[str] = set()
     for candidate in candidates:
@@ -276,6 +208,12 @@ def _collect_authorized_candidate_content(
         terms |= _extract_terms(text)
         numbers |= _extract_numbers(text)
     return terms, numbers
+
+
+
+
+
+
 
 
 def generate_query_rewrite(
@@ -289,21 +227,11 @@ def generate_query_rewrite(
     max_new_terms: int = DEFAULT_MAX_NEW_TERMS_PER_REWRITE,
     max_length: int = DEFAULT_MAX_REWRITTEN_QUERY_LENGTH,
 ) -> dict[str, Any]:
-    """Genera y valida atómicamente una propuesta de reformulación
-    determinista de ``current_query``, seleccionando términos por
-    RELEVANCIA (candidatos ordenados por ``score`` descendente, no
-    alfabéticamente) -- ver ``_rank_authorized_candidates``. Nunca
-    retorna un resultado sin validar; nunca retorna un NO-OP.
 
-    Retorna:
-        {
-            "previous_query": str,
-            "rewritten_query": str,
-            "rewrite_reason": str,
-            "source_terms_used": tuple[str, ...],
-            "source_numbers_used": tuple[str, ...],
-        }
-    """
+    # Valida todos los datos de entrada antes de intentar construir una nueva query.
+    # Comprueba que los textos no estén vacíos, que los reason_codes sean válidos,
+    # que rewrite_reason corresponda realmente a una causa detectada por el grader,
+    # que los candidatos tengan la estructura esperada, que existan fuentes autorizadas
     claim_text = _require_nonempty_str(claim_text, "claim_text")
     current_query = _require_nonempty_str(current_query, "current_query")
     reason_codes = _require_reason_codes(reason_codes)
@@ -313,25 +241,44 @@ def generate_query_rewrite(
     max_new_terms = _require_positive_int(max_new_terms, "max_new_terms")
     max_length = _require_positive_int(max_length, "max_length")
 
+    # Extrae el vocabulario y los números que ya aparecen en el claim o en la query actual.
+    # Esto permite evitar duplicados y distinguir posteriormente qué contenido fue realmente
+    # incorporado durante la reformulación.
     existing_vocabulary = _extract_terms(claim_text) | _extract_terms(current_query)
     existing_numbers = _extract_numbers(claim_text) | _extract_numbers(current_query)
 
+    # Conserva únicamente candidatos provenientes de fuentes autorizadas y los ordena
+    # de mayor a menor según su relevancia en Chroma.
     ranked_candidates = _rank_authorized_candidates(candidates, authorized_sources)
 
+    # Recorre los candidatos en orden de relevancia y selecciona términos nuevos.
+    # Solo incorpora términos que no estuvieran ya presentes en el claim o en la query,
+    # evita duplicarlos y respeta el límite máximo definido por max_new_terms max_new_terms = 8
     selected_terms: list[str] = []
     seen: set[str] = set()
+
     for candidate in ranked_candidates:
         if len(selected_terms) >= max_new_terms:
             break
-        candidate_terms = _extract_terms_in_order(str(candidate.get("text", "")), _STOPWORDS)
+
+        candidate_terms = _extract_terms_in_order(
+            str(candidate.get("text", "")),
+            _STOPWORDS,
+        )
+
         for term in candidate_terms:
             if len(selected_terms) >= max_new_terms:
                 break
+
             if term in existing_vocabulary or term in seen:
                 continue
+
             selected_terms.append(term)
             seen.add(term)
 
+    # Si ningún candidato autorizado aporta términos realmente nuevos,
+    # no es posible producir una reformulación distinta de la query actual.
+    # En ese caso REWRITE_QUERY se considera una acción no ejecutable.
     if not selected_terms:
         raise QueryRewriteError(
             "QUERY_REWRITE_UNAVAILABLE: no hay términos nuevos disponibles en candidatos "
@@ -339,30 +286,42 @@ def generate_query_rewrite(
             "posible producir un rewrite real bajo este algoritmo."
         )
 
+    # Construye la nueva query de forma aditiva:
+    # conserva completa la consulta anterior y añade al final los términos nuevos.
     rewritten_query = f"{current_query} {' '.join(selected_terms)}".strip()
 
+    # Reúne todos los valores numéricos presentes en los candidatos autorizados
+    # y priorizados, para poder identificar cuáles números nuevos provienen realmente
+    # de la evidencia recuperada.
     candidate_numbers_ranked_first = set()
-    for candidate in ranked_candidates:
-        candidate_numbers_ranked_first |= _extract_numbers(str(candidate.get("text", "")))
 
-    source_terms_used = tuple(t for t in selected_terms if not t.isdigit())
-    # Antes: filtraba selected_terms por .isdigit() -- un término
-    # alfanumérico (ej. "5G", "COVID19") no es .isdigit() puro, así que
-    # cualquier dígito incrustado en él quedaba SIN declarar aquí. Pero
-    # el validador (más abajo, y en validate_query_rewrite) recalcula
-    # rewritten_numbers con _extract_numbers() -- una regex \d+ sobre el
-    # STRING final -- que SÍ encuentra ese dígito incrustado como
-    # "número nuevo", disparando QueryRewriteError aunque el término ya
-    # estuviera correctamente registrado en source_terms_used. Se
-    # recalcula con la MISMA función (_extract_numbers) sobre el mismo
-    # texto que realmente se concatena a rewritten_query, para que
-    # ambos lados usen idéntica definición de "número".
-    introduced_text = " ".join(selected_terms)
-    numbers_in_selected_terms = _extract_numbers(introduced_text)
-    source_numbers_used = tuple(
-        sorted(numbers_in_selected_terms & (candidate_numbers_ranked_first - existing_numbers))
+    for candidate in ranked_candidates:
+        candidate_numbers_ranked_first |= _extract_numbers(
+            str(candidate.get("text", ""))
+        )
+
+    # Registra los términos nuevos utilizados en la reformulación que no son
+    # exclusivamente valores numéricos.
+    source_terms_used = tuple(
+        t for t in selected_terms if not t.isdigit()
     )
 
+    # Identifica los números introducidos por los nuevos términos y conserva únicamente
+    # aquellos que aparecen realmente en la evidencia y que no estaban ya presentes
+    # en el claim o en la query anterior.
+    introduced_text = " ".join(selected_terms)
+    numbers_in_selected_terms = _extract_numbers(introduced_text)
+
+    source_numbers_used = tuple(
+        sorted(
+            numbers_in_selected_terms
+            & (candidate_numbers_ranked_first - existing_numbers)
+        )
+    )
+
+    # Construye el resultado de la reformulación, conservando la query anterior,
+    # la nueva query generada, el motivo del rewrite y la procedencia del contenido
+    # adicional incorporado.
     result = {
         "previous_query": current_query,
         "rewritten_query": rewritten_query,
@@ -371,6 +330,10 @@ def generate_query_rewrite(
         "source_numbers_used": source_numbers_used,
     }
 
+    # Antes de devolver la nueva query, valida que la reformulación cumpla las reglas
+    # del sistema: preservar la consulta previa, respetar el motivo de reformulación,
+    # no introducir números no autorizados, usar contenido proveniente de fuentes
+    # permitidas y mantenerse dentro del límite máximo de longitud.
     validate_query_rewrite(
         previous_query=result["previous_query"],
         rewritten_query=result["rewritten_query"],
@@ -384,9 +347,20 @@ def generate_query_rewrite(
         max_length=max_length,
     )
 
+    # Devuelve únicamente una reformulación que ya pasó todas las validaciones.
     return result
 
 
+
+# Valida que una query reformulada sea realmente nueva, conserve íntegra la
+# consulta anterior y añada únicamente términos o números provenientes de
+# evidencia autorizada.
+#
+# También comprueba que todo el contenido nuevo quede correctamente trazado en
+# source_terms_used y source_numbers_used, que no se exceda la longitud máxima DEFAULT_MAX_REWRITTEN_QUERY_LENGTH = 500
+# y que la expansión no contenga estructuras de instrucciones o caracteres inválidos.
+#
+# Si alguna de estas reglas falla, rechaza la reformulación mediante QueryRewriteError.
 def validate_query_rewrite(
     *,
     previous_query: str,
@@ -400,19 +374,6 @@ def validate_query_rewrite(
     authorized_sources: frozenset[str] | set[str],
     max_length: int = DEFAULT_MAX_REWRITTEN_QUERY_LENGTH,
 ) -> None:
-    """Fail-closed POR SÍ MISMA (corrección de esta ronda) -- no depende
-    de haber sido invocada exclusivamente desde ``generate_query_
-    rewrite``: endurece sus propios inputs (``previous_query``/
-    ``claim_text``/``max_length``) al entrar, igual que
-    ``generate_query_rewrite`` hace con los suyos.
-
-    Valida un rewrite propuesto contra todos los guardrails de query
-    drift, incluida la estrategia ADITIVA y la trazabilidad completa y
-    exacta de ``source_terms_used``/``source_numbers_used``. Lanza
-    ``QueryRewriteError`` si cualquiera falla.
-
-    No modifica ningún contador del controller. No ejecuta retrieval.
-    """
     previous_query = _require_nonempty_str(previous_query, "previous_query")
     claim_text = _require_nonempty_str(claim_text, "claim_text")
     max_length = _require_positive_int(max_length, "max_length")
@@ -438,14 +399,7 @@ def validate_query_rewrite(
         raise QueryRewriteError(
             f"rewritten_query excede max_length={max_length} caracteres (recibida {len(rewritten_query)})."
         )
-
-    # Estrategia aditiva impuesta como CONTRATO ESTRUCTURAL EXACTO
-    # (corrección de esta ronda): confirmado que el generador real
-    # SIEMPRE produce previous_query + " " + expansión, sin reordenar
-    # ni normalizar previous_query -- el validador exige exactamente
-    # ese contrato, no solo preservación del set de palabras largas
-    # (que dejaría pasar la eliminación de tokens cortos científicamente
-    # relevantes como "AI"/"R"/"C++", stopwords, o puntuación técnica).
+      
     if not rewritten_query.startswith(previous_query):
         raise QueryRewriteError(
             "rewritten_query no conserva previous_query íntegra como bloque inicial -- "
@@ -496,12 +450,6 @@ def validate_query_rewrite(
     if len(set(source_terms_used)) != len(source_terms_used):
         raise QueryRewriteError(f"source_terms_used contiene duplicados: {source_terms_used!r}.")
 
-    # Traza ORDENADA (corrección de esta ronda): el generador extrae
-    # términos en orden real de aparición dentro de la expansión
-    # (remainder), usando el mismo criterio que _extract_terms_in_order
-    # -- no basta con igualdad de conjuntos, source_terms_used debe
-    # coincidir EXACTAMENTE en orden con los términos nuevos realmente
-    # introducidos por el remainder (no por previous_query/claim_text).
     remainder_terms_in_order = _extract_terms_in_order(remainder, _STOPWORDS)
     real_introduced_terms_in_order = tuple(
         t for t in remainder_terms_in_order
@@ -531,10 +479,6 @@ def validate_query_rewrite(
     if len(set(source_numbers_used)) != len(source_numbers_used):
         raise QueryRewriteError(f"source_numbers_used contiene duplicados: {source_numbers_used!r}.")
 
-    # source_numbers_used SÍ se mantiene como comparación de conjunto/
-    # orden canónico (sorted) -- confirmado que el generador real
-    # deliberadamente los ordena canónicamente (sorted(...)), no por
-    # aparición; no se cambia por simetría con source_terms_used.
     real_introduced_numbers = rewritten_numbers - (claim_numbers | previous_numbers)
     if set(source_numbers_used) != real_introduced_numbers:
         raise QueryRewriteError(
@@ -549,12 +493,7 @@ def validate_query_rewrite(
                 f"source_numbers_used contiene {number!r}, que no proviene de ningún candidate "
                 "text autorizado -- violación de trazabilidad."
             )
-
-    # Instruction/prompt leakage: SOLO sobre la expansión introducida
-    # (remainder), nunca sobre previous_query -- previous_query es
-    # inmutable y ya fue validado/aceptado antes de este ciclo; el
-    # validator de Bloque 3 solo es responsable de que REWRITE_QUERY no
-    # introduzca leakage nuevo, no de re-juzgar contenido preexistente.
+          
     for pattern in _INSTRUCTION_LEAKAGE_PATTERNS:
         if pattern.search(remainder):
             raise QueryRewriteError(
