@@ -123,7 +123,16 @@ def build_execution_for_stagespec(project_dir: str | Path, attempt_number: int =
 
     ground_truth_dir = experiment_dir / "00_ground_truth"
 
-    openai_model = active.get("openai_model", "gpt-4.1-mini")
+    # CONFIG (Stage 08): openai_model es responsabilidad de
+    # 00_setup_config.ipynb -- 04/05/06/07 ya lo exigen fail-closed; 08
+    # usaba active.get("openai_model", "gpt-4.1-mini"), un fallback
+    # hardcodeado silencioso que aquí queda eliminado.
+    openai_model = active.get("openai_model")
+    if not isinstance(openai_model, str) or not openai_model.strip():
+        raise ValueError(
+            "active_experiment.json['openai_model'] debe ser un string "
+            "no vacío (00_setup_config.ipynb es su autoridad)."
+        )
     topic_name = active.get("generation_profile", {}).get("topic_name", "")
 
     from src.io.credentials import resolve_openai_api_key
