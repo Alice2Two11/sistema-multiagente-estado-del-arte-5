@@ -131,10 +131,18 @@ def _load_real_rag_policy_module():
     claro en vez de usar valores hardcodeados desactualizados.
 
     rag_policy.py hace ``from config import RAG_POLICY`` en su propio
-    código (import sin ruta, config.py vive en la misma carpeta) -- eso
-    requiere que esa carpeta esté en sys.path, algo que este proceso
-    (corre fuera de Colab, como subproceso aparte) no garantiza por sí
-    solo. Se agrega explícitamente antes de ejecutar el módulo."""
+    código (import sin ruta). Un simple ``sys.path.insert`` NO alcanza:
+    el paquete estático ``src/config/`` (este mismo repo,
+    ``src/config/__init__.py``) vive en la MISMA carpeta que el
+    ``config.py`` plano que notebook 00 escribe, y Python prefiere el
+    paquete sobre el archivo plano cuando comparten nombre en la misma
+    carpeta -- ``import config`` resolvía al paquete equivocado
+    (confirmado en producción: ``cannot import name 'RAG_POLICY' from
+    'config' (.../src/config/__init__.py)``). Por eso config.py se carga
+    primero, EXPLÍCITAMENTE por ruta, y se registra a mano en
+    ``sys.modules['config']`` -- así, cuando rag_policy.py hace su propio
+    ``from config import RAG_POLICY``, encuentra el ya cacheado (el
+    correcto) en vez de disparar una resolución nueva por sys.path."""
     import importlib.util
     import sys
 
@@ -144,9 +152,18 @@ def _load_real_rag_policy_module():
             "notebook 00_setup_config (celda 14) antes de correr 07."
         )
 
-    real_src_dir = str(_REAL_RAG_POLICY_PATH.parent)
-    if real_src_dir not in sys.path:
-        sys.path.insert(0, real_src_dir)
+    real_config_path = _REAL_RAG_POLICY_PATH.parent / "config.py"
+    if not real_config_path.exists():
+        raise FileNotFoundError(
+            f"No existe {real_config_path} -- ejecuta primero el "
+            "notebook 00_setup_config (celda 11) antes de correr 07."
+        )
+
+    config_spec = importlib.util.spec_from_file_location("config", real_config_path)
+    config_module = importlib.util.module_from_spec(config_spec)
+    sys.modules["config"] = config_module  # registrado ANTES de ejecutarlo, para que
+    # cualquier import circular/interno se resuelva contra este mismo objeto.
+    config_spec.loader.exec_module(config_module)
 
     spec = importlib.util.spec_from_file_location("_rag_policy_real", _REAL_RAG_POLICY_PATH)
     real_module = importlib.util.module_from_spec(spec)
