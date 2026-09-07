@@ -225,7 +225,16 @@ class AgenticRetrievalActionExecutor:
         return reason_code
 
 
-    
+
+    # Ejecuta la acción de mejora seleccionada sobre la Observation actual.
+    #
+    # Primero verifica que la Observation corresponda exactamente al contexto
+    # interno del executor y que decision_basis sea una justificación válida
+    # asociada a uno de los reason_codes realmente detectados por el grader.
+    #
+    # Después dirige la ejecución según la acción elegida:
+    # - REWRITE_QUERY: reformula la consulta y ejecuta una nueva recuperación.
+    # - ADJUST_TOP_K: aumenta el top_k y ejecuta una nueva recuperación.
     def __call__(
         self, selected_action: str, decision_basis: str, observation: AgenticRetrievalObservation
     ) -> AgenticRetrievalObservation:
@@ -241,6 +250,7 @@ class AgenticRetrievalActionExecutor:
             "-- solo REWRITE_QUERY/ADJUST_TOP_K (Bloque 4)."
         )
 
+    
     def _execute_rewrite_query(
         self, rewrite_reason: str, observation: AgenticRetrievalObservation
     ) -> AgenticRetrievalObservation:
