@@ -247,7 +247,10 @@ def is_minimum_viable_evidence(
     de recuperación. En ese momento decide automáticamente si acepta la evidencia
     disponible con ACCEPT_EVIDENCE o si finaliza el claim como FINISH_UNRESOLVED,
     sin consultar al planner."""
-    
+    # Se exige al menos 1 candidato, con un score de relevancia >= 0.15,
+    # y además ese mismo candidato debe pertenecer a una fuente autorizada.
+    # Si cualquiera de estas condiciones no se cumple, la evidencia no se considera
+    # mínimamente viable y el claim puede finalizar como FINISH_UNRESOLVED.
     thresholds = validate_minimum_viable_thresholds(thresholds)
     if not isinstance(authorized_sources, (frozenset, set)):
         raise TypeError(
