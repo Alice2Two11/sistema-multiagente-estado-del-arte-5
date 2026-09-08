@@ -793,8 +793,21 @@ def generate_section_canonical_v2(
                     key=lambda h: int(h[1:]) if h[1:].isdigit() else h,
                 ),
                 "evidence_by_handle": {
-                    handle: {"source_filename": item[0], "chunk_id": item[1]}
-                    for handle, item in evidence_handle_map.items()
+                    handle: {
+                        "source_filename": item[0],
+                        "chunk_id": item[1],
+                        # Fragmento del texto real del chunk (no solo su
+                        # identidad) -- sin esto, un INVALID_EVIDENCE_ID no
+                        # se puede investigar más allá de "existe o no
+                        # existe el handle": no alcanza para confirmar o
+                        # descartar que el modelo esté confundiendo una
+                        # cita interna del propio PDF (ej. "[38]") con un
+                        # handle de evidencia.
+                        "text_snippet": str(
+                            evidence[i].get("text") or ""
+                        )[:400],
+                    }
+                    for i, (handle, item) in enumerate(evidence_handle_map.items())
                 },
             })
 
