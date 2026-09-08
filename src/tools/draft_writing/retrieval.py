@@ -84,6 +84,7 @@ def query_chroma_restricted(
     top_k,
     max_evidence_chars=18000,
     valid_source_chunk_pairs=None,
+    min_relevance_score=0.0,
 ):
     if not source_filenames:
         return []
@@ -113,11 +114,19 @@ def query_chroma_restricted(
             if returned_source != source:
                 continue
 
+            score = float(1.0 - float(distance))
+            # Antes no había ningún piso: siempre se devolvía lo más
+            # cercano disponible, sin importar qué tan malo fuera --
+            # si el corpus no tenía nada relevante para esta sección,
+            # igual se entregaba como si fuera evidencia real.
+            if score < min_relevance_score:
+                continue
+
             rows.append({
                 "source_filename": returned_source,
                 "chunk_id": chunk_id,
                 "text": safe_str(document)[:max_evidence_chars],
-                "score": float(1.0 - float(distance)),
+                "score": score,
                 "retrieval_method": "chroma_restricted",
             })
 
@@ -131,6 +140,7 @@ def query_csv_restricted(
     top_k,
     max_evidence_chars=18000,
     valid_source_chunk_pairs=None,
+    min_overlap_tokens=1,
 ):
     if not source_filenames:
         return []
@@ -145,6 +155,11 @@ def query_csv_restricted(
         text = safe_str(row["text"])
         text_tokens = tokenize_for_overlap(text)
         overlap = len(query_tokens & text_tokens)
+        # Antes no exigía ni una sola palabra en común -- un chunk sin
+        # ninguna relación léxica con la consulta (overlap=0) igual
+        # podía entrar solo para completar el cupo de top_k.
+        if overlap < min_overlap_tokens:
+            continue
         score = overlap / max(len(query_tokens), 1)
         rows.append({
             "source_filename": safe_str(row["source_filename"]),
@@ -163,6 +178,8 @@ def retrieve_section_evidence(
     chunks_df,
     top_k,
     max_evidence_chars=18000,
+    min_relevance_score=0.0,
+    min_overlap_tokens=1,
 ):
     source_filenames = [
         safe_str(paper.get("source_filename") if isinstance(paper, dict) else paper)
@@ -182,6 +199,7 @@ def retrieve_section_evidence(
         top_k,
         max_evidence_chars=max_evidence_chars,
         valid_source_chunk_pairs=valid_source_chunk_pairs,
+        min_relevance_score=min_relevance_score,
     )
 
     if len(rows) < top_k:
@@ -193,6 +211,7 @@ def retrieve_section_evidence(
                 top_k,
                 max_evidence_chars=max_evidence_chars,
                 valid_source_chunk_pairs=valid_source_chunk_pairs,
+                min_overlap_tokens=min_overlap_tokens,
             )
         )
 

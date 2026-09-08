@@ -241,6 +241,8 @@ class DraftWritingAgent:
             chunks,
             top_k,
             max_chars,
+            min_relevance_score=float(policy.get("min_relevance_score", 0.0)),
+            min_overlap_tokens=int(policy.get("min_overlap_tokens", 1)),
         )
 
     # devuelve el resultado oficial del agente indicando que esa sección falló la validación, 
