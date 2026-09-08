@@ -419,52 +419,6 @@ def parse_correction_response(raw_text: Any) -> dict[str, Any]:
 # Phase 6.3: prompts independientes para reverificación virtual previa a aplicación.
 AGENT07_REVERIFICATION_SYSTEM_V1 = "AGENT07_REVERIFICATION_SYSTEM_V1"
 AGENT07_REVERIFICATION_USER_V1 = "AGENT07_REVERIFICATION_USER_V1"
-REVERIFICATION_RESPONSE_FIELDS = (
-    "correction_id", "claim_id", "proposed_verdict", "support_level",
-    "evidence_ids_used", "observed_issue_codes", "target_issues_resolved",
-    "supported_meaning_preserved", "intended_semantic_change_valid",
-    "unintended_semantic_change_absent", "scope_change_valid",
-    "numeric_change_valid", "attribution_change_valid", "citation_change_valid",
-    "manual_review_recommended", "reason_codes", "rationale", "confidence",
-)
-
-def build_reverification_messages(context: Mapping[str, Any], *, previous_errors: Sequence[str] = ()) -> tuple[dict[str, str], dict[str, str]]:
-    policy = context["policy"]
-    system = (
-        f"Prompt {policy['reverification_system_prompt_version']}. "
-        "Realiza una reverificación virtual independiente previa a aplicación. Evalúa únicamente "
-        "el claim virtual propuesto y compáralo con el original. Usa solo la evidencia entregada; "
-        "no uses conocimiento externo, no solicites retrieval, no propongas nuevas correcciones y "
-        "no decidas ACCEPT_FOR_07C. Devuelve exclusivamente JSON puro."
-    )
-    evidence = [{
-        "evidence_id": row["evidence_id"],
-        "source_filename": row["source_filename"],
-        "chunk_id": row["chunk_id"],
-        "text": row.get("canonical_text") or row.get("contractual_text") or row.get("text") or "",
-        "authorized_for_section": bool(row.get("authorized_for_section", False)),
-        "usage_role": row.get("usage_role", "SUPPORT"),
-    } for row in context["authorized_evidence"]]
-    payload = {
-        "prompt_version": policy["reverification_user_prompt_version"],
-        "verification_mode": "REVERIFICATION",
-        "correction_id": context["correction_id"],
-        "claim_id": context["claim_id"],
-        "section_id": context["section_id"],
-        "original_claim_text": context["original_claim_text"],
-        "claim_text": context["claim_text"],
-        "source_verdict": context["source_verdict"],
-        "source_issue_codes": list(context["source_issue_codes"]),
-        "target_issue_codes": list(context["target_issue_codes"]),
-        "correction_action_type": context["correction_action_type"],
-        "allowed_evidence_ids": list(context["allowed_evidence_ids"]),
-        "authorized_evidence": evidence,
-        "retrieval_allowed": False,
-        "retrieval_rounds": 0,
-        "previous_errors": list(previous_errors),
-        "response_fields": list(REVERIFICATION_RESPONSE_FIELDS),
-    }
-    return {"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)}
 
 def parse_reverification_response(raw_text: str) -> dict[str, Any]:
     if not isinstance(raw_text, str) or not raw_text.strip():

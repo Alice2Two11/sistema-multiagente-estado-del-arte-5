@@ -506,23 +506,6 @@ class ProvisionalCollectionValidationResult:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-# Phase 6.5.3: internal referential-integrity result. No final traceability rows.
-@dataclass(frozen=True, slots=True)
-class ProvisionalReferentialIntegrityResult:
-    joined_claim_records: tuple[Mapping[str, Any], ...]
-    joined_correction_records: tuple[Mapping[str, Any], ...]
-    referential_issue_codes: tuple[str, ...]
-    referential_warnings: tuple[str, ...]
-    orphan_records: tuple[Mapping[str, Any], ...]
-    identity_conflicts: tuple[Mapping[str, Any], ...]
-    referential_validation_status: str
-    aggregation_status: str
-    metrics_status: str
-    result_contract_valid: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
 # Phase 6.5.4: full referential context and provisional row construction.
 @dataclass(frozen=True, slots=True)
 class ProvisionalReferentialIntegrityResult:

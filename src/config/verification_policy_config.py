@@ -225,17 +225,6 @@ def validate_verification_input_policy(policy: Mapping[str, Any]) -> dict[str, A
     return value
 
 
-def get_verification_input_policy(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    policy = dict(DEFAULT_VERIFICATION_INPUT_POLICY)
-    policy["claim_verification_intensity"] = dict(DEFAULT_CLAIM_VERIFICATION_INTENSITY)
-    policy["minimum_resolved_evidence_by_claim_type"] = dict(DEFAULT_MINIMUM_RESOLVED_EVIDENCE)
-    if overrides is not None:
-        if not isinstance(overrides, Mapping):
-            raise ValueError("VERIFICATION_POLICY_INVALID:overrides:expected_mapping")
-        policy.update(dict(overrides))
-    return validate_verification_input_policy(policy)
-
-# Phase 3: retrieval independiente inyectable y determinista por claim.
 RETRIEVAL_MODES = (
     "SECTION_SCOPED",
     "CORPUS_WIDE_CONTRADICTION",
@@ -343,18 +332,6 @@ def validate_verification_input_policy(policy: Mapping[str, Any]) -> dict[str, A
     return value
 
 
-def get_verification_input_policy(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    policy = dict(DEFAULT_VERIFICATION_INPUT_POLICY)
-    policy["claim_verification_intensity"] = dict(DEFAULT_CLAIM_VERIFICATION_INTENSITY)
-    policy["minimum_resolved_evidence_by_claim_type"] = dict(DEFAULT_MINIMUM_RESOLVED_EVIDENCE)
-    policy["retrieval_rounds_by_intensity"] = dict(DEFAULT_RETRIEVAL_ROUNDS_BY_INTENSITY)
-    if overrides is not None:
-        if not isinstance(overrides, Mapping):
-            raise ValueError("VERIFICATION_POLICY_INVALID:overrides:expected_mapping")
-        policy.update(dict(overrides))
-    return validate_verification_input_policy(policy)
-
-# Phase 4: núcleo científico por claim con LLM/retrieval inyectables.
 SCIENTIFIC_VERDICTS = (
     "NOT_APPLICABLE",
     "NOT_EVALUATED",
@@ -498,18 +475,6 @@ def validate_verification_input_policy(policy: Mapping[str, Any]) -> dict[str, A
     return value
 
 
-def get_verification_input_policy(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    policy = dict(DEFAULT_VERIFICATION_INPUT_POLICY)
-    policy["claim_verification_intensity"] = dict(DEFAULT_CLAIM_VERIFICATION_INTENSITY)
-    policy["minimum_resolved_evidence_by_claim_type"] = dict(DEFAULT_MINIMUM_RESOLVED_EVIDENCE)
-    policy["retrieval_rounds_by_intensity"] = dict(DEFAULT_RETRIEVAL_ROUNDS_BY_INTENSITY)
-    if overrides is not None:
-        if not isinstance(overrides, Mapping):
-            raise ValueError("VERIFICATION_POLICY_INVALID:overrides:expected_mapping")
-        policy.update(dict(overrides))
-    return validate_verification_input_policy(policy)
-
-
 # Phase 5: recomendaciones y propuestas localizadas; nunca aplica cambios.
 CORRECTION_DECISIONS = (
     "NO_CORRECTION", "PROPOSE_CHANGE", "DEFER_TO_MANUAL_REVIEW", "NOT_CORRECTABLE",
@@ -610,18 +575,6 @@ def validate_verification_input_policy(policy: Mapping[str, Any]) -> dict[str, A
         value[key] = _strict_bool(value.get(key), key)
     return value
 
-def get_verification_input_policy(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    policy = dict(DEFAULT_VERIFICATION_INPUT_POLICY)
-    policy["claim_verification_intensity"] = dict(DEFAULT_CLAIM_VERIFICATION_INTENSITY)
-    policy["minimum_resolved_evidence_by_claim_type"] = dict(DEFAULT_MINIMUM_RESOLVED_EVIDENCE)
-    policy["retrieval_rounds_by_intensity"] = dict(DEFAULT_RETRIEVAL_ROUNDS_BY_INTENSITY)
-    if overrides is not None:
-        if not isinstance(overrides, Mapping):
-            raise ValueError("VERIFICATION_POLICY_INVALID:overrides:expected_mapping")
-        policy.update(dict(overrides))
-    return validate_verification_input_policy(policy)
-
-# Phase 6.1: contratos y policy para reverificación virtual independiente previa a aplicación.
 REVERIFICATION_PROCESS_NAME = "VIRTUAL_INDEPENDENT_PRE_APPLICATION_REVERIFICATION"
 REVERIFICATION_EXECUTION_STATUSES = (
     "NOT_REQUESTED", "PENDING", "COMPLETED", "BLOCKED", "FAILED",
@@ -766,18 +719,6 @@ def validate_verification_input_policy(policy: Mapping[str, Any]) -> dict[str, A
     return value
 
 
-def get_verification_input_policy(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    policy = dict(DEFAULT_VERIFICATION_INPUT_POLICY)
-    policy["claim_verification_intensity"] = dict(DEFAULT_CLAIM_VERIFICATION_INTENSITY)
-    policy["minimum_resolved_evidence_by_claim_type"] = dict(DEFAULT_MINIMUM_RESOLVED_EVIDENCE)
-    policy["retrieval_rounds_by_intensity"] = dict(DEFAULT_RETRIEVAL_ROUNDS_BY_INTENSITY)
-    if overrides is not None:
-        if not isinstance(overrides, Mapping):
-            raise ValueError("VERIFICATION_POLICY_INVALID:overrides:expected_mapping")
-        policy.update(dict(overrides))
-    return validate_verification_input_policy(policy)
-
-# Phase 6.3: reverificación virtual independiente con double inyectable.
 REVERIFICATION_PROMPT_VERSION = "AGENT07_REVERIFICATION_USER_V1"
 REVERIFICATION_SYSTEM_PROMPT_VERSION = "AGENT07_REVERIFICATION_SYSTEM_V1"
 REVERIFICATION_OUTPUT_FIELDS = (
@@ -819,18 +760,6 @@ def validate_verification_input_policy(policy: Mapping[str, Any]) -> dict[str, A
     if not (0.0 <= value["reverification_confidence_min"] < value["reverification_confidence_max"] <= 1.0):
         raise ValueError("VERIFICATION_POLICY_INVALID:reverification_confidence_range")
     return value
-
-def get_verification_input_policy(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    policy = dict(DEFAULT_VERIFICATION_INPUT_POLICY)
-    policy["claim_verification_intensity"] = dict(DEFAULT_CLAIM_VERIFICATION_INTENSITY)
-    policy["minimum_resolved_evidence_by_claim_type"] = dict(DEFAULT_MINIMUM_RESOLVED_EVIDENCE)
-    policy["retrieval_rounds_by_intensity"] = dict(DEFAULT_RETRIEVAL_ROUNDS_BY_INTENSITY)
-    if overrides is not None:
-        if not isinstance(overrides, Mapping):
-            raise ValueError("VERIFICATION_POLICY_INVALID:overrides:expected_mapping")
-        policy.update(dict(overrides))
-    return validate_verification_input_policy(policy)
-
 
 # Phase 6.3R: immutable reverification context and scientific output coherence.
 REVERIFICATION_ASSESSMENTS = ("VALID", "INVALID", "NOT_APPLICABLE")
@@ -1062,18 +991,6 @@ def validate_verification_input_policy(policy: Mapping[str, Any]) -> dict[str, A
         raise ValueError("VERIFICATION_POLICY_INVALID:reverification_support_level_by_verdict:must_match_contract")
     value["reverification_support_level_by_verdict"] = normalized_matrix
     return value
-
-
-def get_verification_input_policy(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    policy = dict(DEFAULT_VERIFICATION_INPUT_POLICY)
-    policy["claim_verification_intensity"] = dict(DEFAULT_CLAIM_VERIFICATION_INTENSITY)
-    policy["minimum_resolved_evidence_by_claim_type"] = dict(DEFAULT_MINIMUM_RESOLVED_EVIDENCE)
-    policy["retrieval_rounds_by_intensity"] = dict(DEFAULT_RETRIEVAL_ROUNDS_BY_INTENSITY)
-    if overrides is not None:
-        if not isinstance(overrides, Mapping):
-            raise ValueError("VERIFICATION_POLICY_INVALID:overrides:expected_mapping")
-        policy.update(dict(overrides))
-    return validate_verification_input_policy(policy)
 
 
 # Phase 6.4: deterministic before/after comparison and provisional 07C decision.
