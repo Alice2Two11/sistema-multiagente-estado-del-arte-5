@@ -42,6 +42,9 @@ def retrieve_chunks_for_paper(
         ),
         source_chunk_count,
     )
+    min_relevance_score = float(
+        retrieval_profile_config.get("min_relevance_score", 0.0)
+    )
 
     candidates = {}
     trace_rows = []
@@ -69,6 +72,15 @@ def retrieve_chunks_for_paper(
             )
 
             score = 1 - float(distance)
+
+            # Antes no había ningún piso: siempre se rankeaban y
+            # seleccionaban los max_chunks "menos malos" disponibles
+            # por similitud, aunque ninguno fuera realmente relevante
+            # para esta retrieval_query puntual -- ese contenido débil
+            # terminaba alimentando la extracción de la ficha
+            # científica como si fuera evidencia sólida.
+            if score < min_relevance_score:
+                continue
 
             trace_rows.append({
                 "source_filename": source_filename,
