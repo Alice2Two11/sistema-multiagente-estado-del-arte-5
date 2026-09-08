@@ -131,6 +131,14 @@ class Agent07ChromaRetriever:
         result = self.collection.query(
             query_texts=[effective_query],
             n_results=self.fetch_k,
+            # Antes esto buscaba en TODO el corpus (25 papers) y recién
+            # filtraba por allowed_set dentro del loop de abajo -- si
+            # ninguno de los papers autorizados para esta sección caía
+            # entre los fetch_k globales más parecidos, el resultado
+            # quedaba vacío aunque SÍ existiera evidencia relevante
+            # dentro de los papers permitidos, simplemente no estaba
+            # entre los más parecidos a nivel de todo el corpus.
+            where={"source_filename": {"$in": list(allowed_sources)}},
         )
 
         documents = (result.get("documents") or [[]])[0]

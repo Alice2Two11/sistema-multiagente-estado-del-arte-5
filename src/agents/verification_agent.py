@@ -396,6 +396,8 @@ class VerificationAgent:
                 retrieval_requests += 1
                 missing = current.get("deterministic_validation", {}).get("missing_structural_elements", ())
                 request = {
+                    "claim_id": current["claim_id"],
+                    "allowed_source_filenames": current["authorized_source_filenames"],
                     "claim_context": current,
                     "retrieval_reason_codes": tuple(validated["reason_codes"]),
                     "remaining_budget": max_retrieval - retrieval_requests,
@@ -537,27 +539,6 @@ class VerificationAgent:
                     
                 updated = dict(current)
                 updated["retrieval_result"] = fused_retrieval
-
-                # Si la nueva recuperación trae resultados actualizados de validaciones automáticas,
-                # incorpora comprobaciones como numeric_pairs_valid, comparative_coverage_ok,
-                # attribution_coverage_ok y missing_structural_elements, para reflejar si la nueva
-                # evidencia cubre correctamente los valores numéricos, comparaciones, atribuciones
-                # y elementos estructurales necesarios para respaldar el claim. 
-                if "deterministic_validation" in validated_delta:
-                    merged_validation = dict(updated["deterministic_validation"])
-                    merged_validation.update(validated_delta["deterministic_validation"])
-                    updated["deterministic_validation"] = merged_validation
-                
-                # Descuenta una búsqueda disponible y vuelve a revisar el claim
-                # con la evidencia nueva antes de continuar.
-                ac = dict(updated["attempt_context"])
-                ac["remaining_retrieval_requests"] = max(0,int(ac.get("remaining_retrieval_requests", 0)) - 1)
-                updated["attempt_context"] = ac
-                current = validate_claim_verification_context(updated)
-                precheck = deterministic_precheck(current)
-                selection = select_evidence_for_scientific_judgment(current)
-                
-                trace.extend(["DETERMINISTIC_PRECHECK_AFTER_RETRIEVAL","EVIDENCE_RESELECTED"])
 
                 # Actualiza las reglas determinísticas con la nueva recuperación, descuenta una búsqueda disponible y vuelve a evaluar el claim.
                 if "deterministic_validation" in validated_delta:
