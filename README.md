@@ -131,17 +131,6 @@ Este ciclo se persiste en disco de forma transaccional en
 y un segundo intento de completar la misma ronda se rechaza explícitamente
 (no hay doble escritura silenciosa).
 
-### `07C`: excluido del flujo activo
-
-`07C` (reverificación de una corrección ya aplicada automáticamente) **no
-forma parte del flujo activo**. La ruta real es `07 → 06 (RETURN) → 07`
-directamente, sin pasar por 07C. El código conserva compatibilidad
-histórica con 07C únicamente en `src/adapters/agent07c_handoff.py` y
-mensajes/nombres de archivo heredados donde era inevitable — su presencia
-en el código no significa que participe del registro de etapas activo
-(`STAGE_ORDER` en `src/orchestration/pipeline_orchestrator.py` no lo
-incluye).
-
 ### Identidad estable de claims (`claim_uid`)
 
 `claim_id` (ej. `S5_C2`) es **posicional**: 06 lo recalcula cada vez que
@@ -316,7 +305,7 @@ bash /content/proyecto_estado_arte/scripts/setup_colab.sh
 todo se ejecuta con el Python del venv, nunca el global:
 
 ```bash
-/content/venv_estado_arte/bin/python -m src.orchestration.pipeline_orchestrator --project-dir /content/proyecto_estado_arte
+/content/venv_estado_arte/bin/python -m src.orchestration_langgraph.pipeline_graph --project-dir /content/proyecto_estado_arte --until 08_evaluacion_experimental
 # o, equivalente, vía el wrapper que ya fija MPLBACKEND=Agg, el venv y
 # --project-dir (usa THESIS_PROJECT_DIR/ESTADO_ARTE_PYTHON si se
 # necesita otra ruta) -- cualquier flag adicional, incluido --start-stage,
@@ -406,29 +395,29 @@ Estado verificado en esta entrega: **468/468** en 37 suites.
 ## 14. Cómo ejecutar el pipeline
 
 ```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR
+python3 -m src.orchestration_langgraph.pipeline_graph --project-dir /ruta/a/PROJECT_DIR --until 08_evaluacion_experimental
 ```
 
-`run_pipeline()` no es un `for` fijo sobre las etapas: interpreta la
-`RequestedTransition` real que devuelve cada etapa (`ADVANCE`, `RETRY`,
-`RETURN`, `HALT_STAGE`, `STOP_PIPELINE`). Por eso el mismo comando cubre el
-ciclo `06 ↔ 07` sin ningún flag especial: si 07 emite `RETURN`, el bucle
-vuelve a 06 automáticamente; cuando 07 finalmente emite `ADVANCE`, sigue
-hacia 08.
+`run_pipeline_via_langgraph()` no es un `for` fijo sobre las etapas:
+interpreta la `RequestedTransition` real que devuelve cada etapa
+(`ADVANCE`, `RETRY`, `RETURN`, `HALT_STAGE`, `STOP_PIPELINE`). Por eso el
+mismo comando cubre el ciclo `06 ↔ 07` sin ningún flag especial: si 07
+emite `RETURN`, el grafo vuelve a 06 automáticamente; cuando 07 finalmente
+emite `ADVANCE`, sigue hacia 08.
 
 ### Ejecutar hasta una etapa específica
 
 ```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR --until 07_agente_verificador
+python3 -m src.orchestration_langgraph.pipeline_graph --project-dir /ruta/a/PROJECT_DIR --until 07_agente_verificador
 ```
 
-`--until` acepta cualquier clave de `STAGE_ORDER` y detiene el bucle apenas
-esa etapa produce un resultado (incluso si pedía `ADVANCE`).
+`--until` acepta cualquier clave de `CANONICAL_STAGE_ORDER` y detiene el
+grafo apenas esa etapa produce un resultado (incluso si pedía `ADVANCE`).
 
 ### Usar `--force-rerun`
 
 ```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR --force-rerun
+python3 -m src.orchestration_langgraph.pipeline_graph --project-dir /ruta/a/PROJECT_DIR --force-rerun
 ```
 
 Reejecuta la etapa inicial (`--until` o la primera) aunque ya esté
@@ -440,19 +429,42 @@ todas.
 ### Retomar el pipeline en una etapa específica: `--start-stage`
 
 ```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR --start-stage 07_agente_verificador
+python3 -m src.orchestration_langgraph.pipeline_graph --project-dir /ruta/a/PROJECT_DIR --start-stage 07_agente_verificador
 ```
 
 Arranca el recorrido directamente en la etapa indicada, en vez de la
-primera de `STAGE_ORDER` — ejecuta **únicamente** esa etapa y las que
-resulten de sus transiciones reales, nunca las anteriores. A diferencia
+primera de `CANONICAL_STAGE_ORDER` — ejecuta **únicamente** esa etapa y las
+que resulten de sus transiciones reales, nunca las anteriores. A diferencia
 de `--force-rerun`, no ignora fingerprints por defecto: si la etapa ya
 está `COMPLETED` y vigente, se reconoce `SKIPPED_FRESH` con normalidad; si
 su último commit fue `FAILED` (ej. tras un `HALT_STAGE`), esto la
 reintenta con un `decision_id` nuevo, sin tocar ninguna etapa previa. Es
-la vía oficial para reintentar una sola etapa desde un estado terminal
-(ver `scripts/run_pipeline.py`, que pasa cualquier flag adicional
-transparentemente al orquestador real, incluido este).
+la vía oficial para reintentar una sola etapa desde un estado terminal.
+
+### Reinicio limpio: `--fresh-start`
+
+```bash
+python3 -m src.orchestration_langgraph.pipeline_graph --project-dir /ruta/a/PROJECT_DIR --fresh-start
+```
+
+Antes de correr, reinicia `attempts_used` de **todas** las etapas a 0, el
+ciclo `writer_verifier` (06↔07) a `NOT_STARTED`, limpia `pending_execution`
+y mueve (nunca borra) a un backup con timestamp cualquier ronda ya
+persistida en `writer_verifier_cycle/`. Implica `--force-rerun`
+automáticamente. Usarlo:
+
+- Cada vez que se aplica un cambio de código real antes de la siguiente
+  corrida de un experimento ya usado antes.
+- Si la corrida anterior se interrumpió de forma no limpia (proceso
+  matado, Colab desconectado a medias).
+
+**Detección automática:** si no se pasa `--fresh-start` explícitamente, el
+pipeline igual compara un hash del árbol `src/` contra el de la última
+corrida (guardado en `PROJECT_DIR/.last_code_hash.txt`); si el código
+cambió desde entonces, hace fresh-start solo, sin que haga falta pedirlo.
+Si no cambió nada, no hace nada — el comportamiento normal de
+`SKIPPED_FRESH`/`attempts_used` sigue intacto. Ver
+`src/orchestration/fresh_start.py`.
 
 ## 15. Outputs principales
 
@@ -541,7 +553,7 @@ _round_status.json               (estado interno: AWAITING_REVISION -> REVISION_
 
 Cada etapa se ejecuta con el mismo protocolo transaccional
 (`src/state/state_store.py`, `run_stage()` en
-`src/orchestration/pipeline_orchestrator.py`):
+`src/orchestration/stage_execution.py`):
 
 1. **PREPARE**: `store.prepare_execution(...)` registra la intención de
    ejecutar, generando un `decision_id`. Si ya hay una ejecución pendiente
@@ -588,9 +600,6 @@ su fingerprint no existe, falla explícitamente en vez de degradarse a
   `tests/orchestration/test_verification_numeric_risk_characterization.py`)
   pero no se investigó su relación completa con el notebook 03B ni se
   intentó resolver — queda como tarea independiente.
-- 07C permanece en el código por compatibilidad histórica pero no forma
-  parte del registro de etapas activo; su eliminación física es una
-  migración separada.
 
 ## 21. Estado de validación
 
@@ -687,12 +696,11 @@ en esta etapa (`src/tools/evaluation/ground_truth.py`); ninguna otra etapa
 (02-07) lee ni recibe contenido de Ground Truth — reforzado con listas de
 rechazo explícitas en varios módulos de `src/tools/` además de la
 validación de política en `src/adapters/verification_orchestrator_runtime.py`.
-07C sigue excluido también aquí (nunca se pasa `agent07c_directory`).
 
 ## 26. Módulos de configuración planos en `src/` (duplicación conocida)
 
 `src/config.py`, `src/experiment_config.py`, `src/generation_config.py`,
-`src/rag_policy.py`, `src/rag_utils.py`, `src/llm_utils.py`,
+`src/rag_utils.py`, `src/llm_utils.py`,
 `src/prompts.py`, `src/pdf_utils.py`, `src/io_utils.py` son módulos
 **planos**, en la raíz de `src/`, que las celdas de los notebooks
 operativos originales (`00_setup_config` y `07_agente_verificador`)
@@ -705,6 +713,16 @@ desincronizarse** si una se edita sin la otra. Se conservan porque
 notebooks reales todavía los usan; la fuente de verdad para todo lo que
 ejecuta el orquestador (03→08 vía `StateStore`/`StageSpec`) es siempre
 `active_experiment.json`, nunca estos módulos.
+
+**Excepción:** `src/rag_policy.py` **ya no** es un módulo plano aislado.
+`src/adapters/verification_orchestrator_runtime.py` lo carga en tiempo
+real por ruta explícita (`_load_real_rag_policy_module()`), sin ninguna
+copia local, específicamente para eliminar el riesgo de desincronización
+que este párrafo describe. Si el archivo real
+(`{PROJECT_DIR}/src/rag_policy.py`, generado por la celda 14 de
+`00_setup_config.ipynb`) no existe todavía, 07 falla explícitamente
+pidiendo correr el notebook 00 primero, en vez de usar un valor
+desactualizado.
 
 ## 27. Integración real con OpenAI/Chroma — bugs encontrados y corregidos
 
@@ -881,4 +899,185 @@ o "se completó" con datos reales, esa afirmación necesita matizarse: hoy
 solo tiene respaldo empírico real la ruta `07 → HALT_STAGE` (con o sin
 revisión manual pendiente), no la ruta completa `07 → 06 → 07 → 08`. Ver
 también sección 20.
+
+**Actualización (ver sección 28):** el párrafo anterior ya no describe el
+estado actual. En la fase de arreglos documentada en la sección 28, la
+ruta completa `07 → 06 (RETURN) → 07 → 08` se confirmó funcionando de
+punta a punta con datos reales, en múltiples experimentos y dominios
+distintos (incluida al menos una corrida con **dos** rondas consecutivas
+del ciclo). Sí tiene respaldo empírico real hoy.
+
+## 28. Segunda fase de integración real — retrieval, 05, 03B y limpieza
+
+Esta sección documenta una segunda ronda de correcciones reales,
+posterior a la de la sección 27, motivada por una investigación end-to-end
+de por qué ciertos experimentos (especialmente en el dominio
+Sostenibilidad) mostraban `factual_precision` anormalmente bajo. Mismo
+criterio que la sección 27: cada hallazgo se originó en una corrida real,
+se verificó contra el código antes de tocarlo, y se corrigió sin relajar
+ningún validador.
+
+### Bugs reales en el retriever de 07 (`src/adapters/verification_incremental_retriever.py`, `src/agents/verification_agent.py`)
+
+Tres bugs distintos, los tres explicando la misma familia de síntoma
+(`NOT_EVALUATED` con `evidence_pair_count=0` pese a que 06 sí citó
+evidencia real):
+
+- **Búsqueda global, filtro después**: `collection.query()` buscaba en
+  **todo** el corpus (`n_results=self.fetch_k`, sin `where`) y recién
+  después descartaba los resultados fuera de `allowed_set` dentro del
+  loop. Si ninguno de los papers autorizados para una sección caía entre
+  los `fetch_k` resultados más parecidos a nivel de todo el corpus, la
+  búsqueda volvía vacía aunque sí existiera evidencia real dentro de los
+  papers permitidos. Corregido agregando
+  `where={"source_filename": {"$in": list(allowed_sources)}}` a la
+  consulta — restringe antes de rankear, no después.
+- **Request roto en la recuperación adicional pedida por el LLM**:
+  cuando el propio modelo marca `additional_retrieval_needed=true` en su
+  veredicto, `VerificationAgent` construía un `request` sin las claves
+  `claim_id`/`allowed_source_filenames` que `retrieve_more()` exige en su
+  primera línea — `KeyError` capturado en silencio, registrado como
+  `ADDITIONAL_RETRIEVAL_FAILED`, terminando en `NOT_EVALUATED`. Es una
+  vía **distinta** del ciclo de reintento automático de
+  `agentic_retrieval_controller.py` (que sí funcionaba). Corregido
+  agregando ambas claves, tomadas de `current["claim_id"]`/
+  `current["authorized_source_filenames"]`.
+- **Presupuesto de recuperación descontado el doble**: un bloque completo
+  de código (fusionar `deterministic_validation`, descontar
+  `remaining_retrieval_requests`, revalidar) estaba pegado dos veces
+  seguidas — cada recuperación real consumía 2 unidades de presupuesto en
+  vez de 1. Corregido eliminando el bloque duplicado.
+
+### Sin piso de relevancia mínima en el retrieval (03, 06, notebook 02)
+
+`retrieve_chunks_for_paper` (03), `query_chroma_restricted`/
+`query_csv_restricted` (06, `src/tools/draft_writing/retrieval.py`) y
+`retrieve_raw()` (notebook `02_rag_chroma_retriever.ipynb`) siempre
+devolvían exactamente `top_k` resultados, sin importar qué tan bajo fuera
+el mejor score disponible — si el corpus no tenía nada relevante para una
+consulta puntual, igual se entregaba "lo menos malo" como si fuera
+evidencia real. Rastreado hasta un caso concreto: un `key_argument` de 05
+sobre "integración cuantitativa de variables sociales con modelos
+espaciales" sin ningún respaldo real en el corpus de Sostenibilidad.
+Corregido agregando `min_relevance_score` (0.15 por defecto, calibrado
+para no bloquear coincidencias reales ya observadas — la más baja
+confirmada como acierto genuino fue 0.417) a `RAG_POLICY.retrieval_profiles`
+en `rag_policy.py` (celda 4 de `00_setup_config.ipynb`), filtrando
+candidatos antes de la selección final en los tres puntos. Efecto medido:
+`factual_precision` en el mismo dominio subió de un piso de 0.362 a un
+rango estable de 0.51-0.71 en seis corridas posteriores.
+
+### 05 no verificaba sus propios `key_arguments` contra evidencia real
+
+05 sintetiza `key_arguments` a partir de fichas resumidas (03) y análisis
+temático (04) — nunca contra texto fuente. Podía producir un argumento
+sintéticamente plausible que ningún paper específico respalda con esa
+especificidad, que 06 heredaba como instrucción obligatoria y terminaba
+escribiendo sin ningún respaldo verificable. Corregido agregando
+`src/tools/outline_generation/key_argument_verification.py`: después de
+que 05 arma `papers_to_use` por sección, cada `key_argument` se verifica
+(Chroma restringido + respaldo léxico, mismo mecanismo que ya usa 06) y
+se descarta si no tiene ningún respaldo real — nunca en silencio, queda
+registrado en `section["key_arguments_removed_unverified"]` y en
+`key_arguments_verification` del manifiesto. Requirió darle a 05 acceso
+real a Chroma por primera vez (`OutlineGenerationRuntime.collection`,
+`build_real_outline_execution`).
+
+**Efecto secundario esperado:** si todos los `key_arguments` de una
+sección quedan sin respaldo, la sección falla `validate_outline`
+(`key_arguments: []` cuenta como campo faltante) — comportamiento
+deseado (05 debe reintentar en vez de proponer una sección sin ningún
+argumento verificable), pero significa que 05 puede fallar más seguido
+que antes de este cambio.
+
+### `max_attempts` hardcodeado, ignorando la política (05 y 03B)
+
+Dos etapas tenían su número de reintentos fijo en el código,
+independiente de lo que dijera `policy["max_attempts"]`:
+
+- **05**: `input_validation.py` rechazaba `attempt_number not in (1,2)` a
+  mano, y `outline_generation_agent.py` decidía `RETRY` únicamente si
+  `attempt_number == 1`. Corregido para leer `policy["max_attempts"]`
+  (subido de 2 a 3 en `DEFAULT_POLICY`).
+- **03B**: caso más profundo — **seis** lugares distintos, documentados
+  como decisión deliberada ("la primera candidata 03B admite únicamente
+  max_attempts=1"), coordinados para descartar el `attempt_number` real
+  en cada capa (`_real_quantitative_execution`,
+  `_quantitative_runtime_transaction`, `build_quantitative_agent_input`,
+  `execute_quantitative_runtime_transaction`, el `StageSpec` con
+  `max_attempt_number=1`, y la propia validación de política). Más grave
+  todavía: la capacidad (`src/capabilities/quantitative_extraction.py`)
+  **nunca tenía una rama `RETRY`** en su lógica de transición — iba
+  directo a `HALT_STAGE` ante cualquier calidad no aprobada, sin importar
+  el intento. Corregidos los seis puntos; `DEFAULT_QUANTITATIVE_EXTRACTION_POLICY["max_attempts"]`
+  subido de 1 a 2, con la rama `RETRY` agregada. Confirmado en producción
+  real: `03 · Extracción y normalización cuantitativa ... NEEDS_REVISION
+  next=RETRY->03B` — primera vez que esta etapa reintentó en vez de
+  detenerse.
+
+### Código muerto real, distinguido del patrón de "fases encadenadas"
+
+Auditoría dirigida por duplicados de nombre dentro de un mismo archivo.
+Antes de borrar cualquiera, se verificó si existía un alias
+`_nombre_phaseNN = nombre_funcion` capturando la versión anterior — si
+existía, las N definiciones están genuinamente encadenadas (cada fase
+envuelve a la anterior) y **no** son código muerto, por confuso que
+resulte leerlas. Con esa verificación:
+
+- `src/config/verification_policy_config.py`: `get_verification_input_policy`
+  tenía 8 copias muertas (nunca encadenadas) — eliminadas, queda 1.
+  `validate_verification_input_policy` (9 copias, todas encadenadas por
+  alias) se dejó intacta.
+- `src/tools/verification/validation.py`: sus 4 funciones con nombres
+  duplicados resultaron **todas** genuinamente encadenadas — nada se
+  tocó.
+- `src/tools/verification/traceability.py`: `ProvisionalReferentialIntegrityResult`
+  definida 2 veces con campos distintos, sin ningún alias — la primera
+  (incompleta) era inalcanzable, eliminada.
+- `src/tools/verification/prompting.py`: `build_reverification_messages`
+  y `REVERIFICATION_RESPONSE_FIELDS` duplicadas sin alias — eliminadas
+  las versiones muertas (la primera de cada una).
+- `write_raw_section_rag_trace` (`src/tools/draft_writing/artifacts.py`):
+  definida pero **nunca llamada** — conectada en
+  `canonical_sentences.py`, ahora cada intento de sección deja
+  `S{n}_attempt_{n}_rag_trace.json` con los handles de evidencia
+  realmente disponibles (incluyendo un fragmento del texto de cada
+  chunk), para poder distinguir alucinación pura de hueco real de
+  recall la próxima vez que un `INVALID_EVIDENCE_ID` aparezca.
+- `openai_model` con fallback silencioso a `"gpt-4.1-mini"` en
+  `src/adapters/evaluation_stagespec_wiring.py` (etapa 08) — el mismo
+  patrón que ya se había corregido en 04/05/06 pero no en 08. Corregido
+  con el mismo `raise ValueError` fail-closed.
+
+### Unificación de patrones de exclusión de secciones de revisión (00, 01, 07)
+
+Existían **dos** listas independientes de "qué frases indican una
+sección de revisión de literatura a excluir" — la de `01_ingesta` (real,
+la que ejecuta la exclusión) y la de `rag_policy.py`/celda 14 del 00 (que
+`verification_orchestrator_runtime.py` copiaba a mano). Diferían en
+contenido real (`background and related work` vs `background` suelto,
+`related research` presente en una y ausente en la otra). Unificadas en
+`rag_policy.py` como única fuente (superconjunto verificado sin
+regresiones: 17/18 casos de prueba idénticos, 1 cobertura nueva
+legítima); `01_ingesta` ahora construye su regex desde
+`rag_policy_module.REVIEW_SECTION_PATTERNS` en vez de mantener su propia
+copia. La copia hardcodeada en `verification_orchestrator_runtime.py` se
+eliminó por completo — ahora carga `rag_policy.py` real por ruta
+explícita (ver sección 26, "Excepción").
+
+### `--fresh-start` y detección automática de cambios de código
+
+Ver sección 14. Motivado por un patrón recurrente durante esta fase: un
+parche de código se aplicaba pero `SKIPPED_FRESH`/`attempts_used`
+reutilizaban resultados calculados con la versión anterior, porque las
+firmas de fingerprint por etapa nunca hasheaban el código fuente en sí,
+solo datos y strings de versión mantenidos a mano. `--fresh-start`
+resuelve el síntoma explícitamente (reinicio total bajo demanda); la
+detección automática de cambios de código
+(`auto_fresh_start_if_code_changed`, comparando un hash del árbol
+`src/` contra la corrida anterior) lo resuelve sin que haga falta
+acordarse de pedirlo. Ninguna de las dos toca la causa de fondo (las
+firmas de fingerprint por etapa seguirían sin detectar un cambio de
+código por sí solas) — quedaría como trabajo futuro fechar cada firma
+contra un hash real del código relevante.
 

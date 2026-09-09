@@ -4,11 +4,12 @@ from dataclasses import dataclass
 class OutlineGenerationRuntime:
  invoke_fn: object
  parse_fallback: object|None=None
+ collection: object|None=None
  def invoke(self,prompt): return self.invoke_fn(prompt)
  def parse(self,raw):
   from src.tools.outline_generation.response_parsing import extract_first_valid_json
   return extract_first_valid_json(raw,self.parse_fallback)
-def build_openai_outline_runtime(model, *, temperature, project_dir=None, llm_factory=None, human_message_factory=None):
+def build_openai_outline_runtime(model, *, temperature, project_dir=None, llm_factory=None, human_message_factory=None, collection=None):
  from src.io.credentials import load_runtime_credential
  load_runtime_credential('OPENAI_API_KEY', project_dir=project_dir)
  if llm_factory is None:
@@ -18,7 +19,7 @@ def build_openai_outline_runtime(model, *, temperature, project_dir=None, llm_fa
   from langchain_core.messages import HumanMessage
   human_message_factory=HumanMessage
  llm=llm_factory(model=model,temperature=temperature)
- return OutlineGenerationRuntime(lambda prompt: llm.invoke([human_message_factory(content=prompt)]).content)
+ return OutlineGenerationRuntime(lambda prompt: llm.invoke([human_message_factory(content=prompt)]).content, collection=collection)
 
 from pathlib import Path
 import json
@@ -41,7 +42,13 @@ def load_outline_configuration(project_dir,attempt_number=1):
  openai_model=active.get('openai_model')
  if not isinstance(openai_model,str) or not openai_model.strip():
   raise ValueError("active_experiment.json['openai_model'] debe ser un string no vacío (00_setup_config.ipynb es su autoridad).")
- return {'project_dir':root,'experiment_id':eid,'run_id':active.get('run_id',eid),'attempt_number':int(attempt_number),'model':openai_model,'policy':policy,'output_dir':out,'state_path':resolve_pipeline_state_path(root,eid),'paths':paths,'experiment_dir':exp}
+ collection_name = active.get('chroma_collection_name')
+ if not isinstance(collection_name, str) or not collection_name.strip():
+  raise ValueError("active_experiment.json['chroma_collection_name'] debe ser un string no vacío (00_setup_config.ipynb es su autoridad).")
+ from src.adapters.draft_writing_runtime import resolve_chroma_dir
+ chroma_dir = resolve_chroma_dir(exp, collection_name, active.get('chroma_dir'), experiment_id=eid)
+ chunks_clean_path = Path(active.get('chunks_clean_path', exp/'03_chunks'/'chunks_clean_for_rag.csv'))
+ return {'project_dir':root,'experiment_id':eid,'run_id':active.get('run_id',eid),'attempt_number':int(attempt_number),'model':openai_model,'policy':policy,'output_dir':out,'state_path':resolve_pipeline_state_path(root,eid),'paths':paths,'experiment_dir':exp,'embedding_model_name':active.get('embedding_model_name','sentence-transformers/all-MiniLM-L6-v2'),'chroma_collection_name':collection_name,'chroma_dir':chroma_dir,'chunks_clean_path':chunks_clean_path}
 def _previous_outline_attempt(cfg):
  if cfg['attempt_number']!=2:return None
  p=Path(cfg['state_path']);payload=json.loads(p.read_text(encoding='utf-8'));stage=payload.get('stages',{}).get('05_generador_esquema',{})
@@ -62,4 +69,7 @@ def build_outline_agent_input(cfg):
  cfg['policy']['current_fingerprint']=fingerprint_mapping(signature)
  return AgentInput(experiment_id=cfg['experiment_id'],run_id=cfg['run_id'],stage_name='05_generador_esquema',attempt_number=cfg['attempt_number'],mode=ExecutionMode.FULL_RUN,agent_context=AgentContext(allowed_tools=('llm','atomic_write','outline_validation'),output_directory=str(cfg['output_dir']),runtime_resources={'model':cfg['model']}),dependencies=deps,policy=cfg['policy'],previous_attempt=_previous_outline_attempt(cfg))
 def build_real_outline_execution(project_dir,attempt_number=1):
- cfg=load_outline_configuration(project_dir,attempt_number);return OutlineGenerationAgent(build_openai_outline_runtime(cfg['model'],temperature=float(cfg['policy']['temperature']),project_dir=cfg['project_dir'])),build_outline_agent_input(cfg),cfg
+ cfg=load_outline_configuration(project_dir,attempt_number)
+ from src.adapters.draft_writing_runtime import build_chroma_collection
+ collection=build_chroma_collection(cfg)
+ return OutlineGenerationAgent(build_openai_outline_runtime(cfg['model'],temperature=float(cfg['policy']['temperature']),project_dir=cfg['project_dir'],collection=collection)),build_outline_agent_input(cfg),cfg

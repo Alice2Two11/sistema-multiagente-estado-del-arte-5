@@ -27,18 +27,16 @@ orquestador**, incluida la 08 (evaluación) y el ciclo correctivo real
   15+ bugs de contrato (prompt del corrector, validadores de
   `validation.py`, la fórmula de `hallucination_rate` de 08, y un bug de
   no-determinismo en el retriever RAG). Registro completo en
-  `README.md` sección 27. **El ciclo `06 ↔ 07` sigue sin observarse
-  completo de punta a punta en ninguna corrida real** — las corridas
-  reales llegan hasta `HALT_STAGE` (con o sin revisión manual pendiente),
-  nunca hasta un `RETURN`→06 real seguido de `ADVANCE`→08. No asumas que
-  está validado con datos reales solo porque lo está con dobles.
+  `README.md` sección 27. **Actualización posterior (sección 28): el
+  ciclo `06 ↔ 07` ya se confirmó completo de punta a punta con datos
+  reales**, en múltiples experimentos y dominios, incluida al menos una
+  corrida con dos rondas consecutivas.
 - Etapa 08 migrada completa: métricas automáticas (ROUGE-L, BERTScore,
   similitud semántica), LLM Judge, métricas factuales/trazabilidad
   (incluye `hallucination_rate`, `hallucination_rate_broad` y
   `unverified_rate` — ver README sección 27), persistencia de los 15
   outputs, fingerprints, contrato transaccional y `StageSpec` real
   conectado al orquestador.
-- 07C **no** está en el flujo activo — ver `README.md` sección 6.
 - **468/468** escenarios pasando en 37 suites de `tests/orchestration/`
   (correr con `python3 archivo.py`, no con `pytest` — ver advertencia
   abajo).
@@ -98,19 +96,23 @@ previa de este archivo.
   -> 07 reverifica -> ADVANCE -> 08
 ```
 
-Cableado y probado con dobles deterministas (ver arriba). **No observado
-completo con datos reales todavía** — ver `README.md` sección 27 para el
-patrón real que sí se observó (`DEFER_TO_MANUAL_REVIEW` por evidencia
-débil, o `PROPOSE_CHANGE` rechazado en el validador semántico). Detalle
-completo en `README.md`, secciones 6, 17 y 27.
+Cableado y probado con dobles deterministas (ver arriba), y **confirmado
+completo con datos reales** en la segunda fase de integración —
+ver `README.md` sección 28 (y sección 27 para el patrón que se observaba
+antes de esos arreglos: `DEFER_TO_MANUAL_REVIEW` por evidencia débil, o
+`PROPOSE_CHANGE` rechazado en el validador semántico, ambos siguen siendo
+desenlaces normales y esperables). Detalle completo en `README.md`,
+secciones 6, 17, 27 y 28.
 
 ## Ejecutar el pipeline
 
 ```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR
+python3 -m src.orchestration_langgraph.pipeline_graph --project-dir /ruta/a/PROJECT_DIR --until 08_evaluacion_experimental
 ```
 
 Hasta una etapa específica: agregar `--until 07_agente_verificador`.
+Reinicio limpio (cambiaste código, o la corrida anterior se cortó mal):
+agregar `--fresh-start` — ver `README.md` sección 14.
 Reejecutar aunque ya esté `COMPLETED`: agregar `--force-rerun`. Detalle
 completo, incluidos requisitos previos (`active_experiment.json`,
 `OPENAI_API_KEY`), en `README.md` secciones 11-14.
@@ -127,15 +129,6 @@ for f in tests/orchestration/test_*.py; do python3 "$f" || echo "FALLÓ: $f"; do
 empíricamente que marca "passed" cualquier escenario interno fallido (el
 decorador `@scenario` captura la excepción y no la relanza). Detalle en
 `README.md` sección 13.
-
-## Decisión sobre el Agente 07C
-
-07C no es obligatorio ni forma parte del flujo activo. La ruta real es
-`07 → 06 (RETURN) → 07` directamente. El código conserva compatibilidad
-histórica con 07C solo donde era inevitable
-(`src/adapters/agent07c_handoff.py`, algunos mensajes/nombres de archivo
-literales) — su presencia no implica que participe del registro de etapas
-activo. Ver `README.md` sección 6 para el detalle completo.
 
 ## Notebooks operativos
 
