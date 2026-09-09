@@ -180,8 +180,24 @@ def main(argv=None) -> int:
     args = _parse_args(argv)
 
     force_rerun = args.force_rerun
+
+    # Detección automática: si el código de src/ cambió desde la última
+    # corrida (aunque sea una sola línea), se hace fresh-start solo,
+    # sin que haga falta pedirlo. Si no cambió nada, esto no hace nada
+    # y el comportamiento normal (SKIPPED_FRESH, attempts_used tal como
+    # estaban) sigue intacto.
+    from src.orchestration.fresh_start import (
+        auto_fresh_start_if_code_changed,
+        perform_fresh_start,
+        print_fresh_start_report,
+    )
+    auto_report = auto_fresh_start_if_code_changed(args.project_dir)
+    if auto_report is not None:
+        print("(auto-detectado: el código cambió desde la última corrida)")
+        print_fresh_start_report(auto_report)
+        force_rerun = True
+
     if args.fresh_start:
-        from src.orchestration.fresh_start import perform_fresh_start, print_fresh_start_report
         report = perform_fresh_start(args.project_dir)
         print_fresh_start_report(report)
         force_rerun = True  # --fresh-start siempre implica --force-rerun.
