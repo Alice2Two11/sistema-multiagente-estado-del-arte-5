@@ -75,10 +75,10 @@ class QuantitativeExtractionCapability:
         try:
             if agent_input.stage_name != STAGE_NAME:
                 raise ValueError("INVALID_CONFIGURATION: stage_name")
-            if agent_input.attempt_number != 1:
-                raise ValueError("INVALID_CONFIGURATION: 03B solo admite attempt_number=1")
             reject_ground_truth_payload(agent_input.to_dict())
             policy = validate_quantitative_policy(agent_input.policy)
+            if not 1 <= agent_input.attempt_number <= policy["max_attempts"]:
+                raise ValueError(f"INVALID_CONFIGURATION: 03B admite attempt_number entre 1 y {policy['max_attempts']}.")
             df, chunks, _source_manifest = load_and_validate_inputs(
                 experiment_id=agent_input.experiment_id,
                 run_id=agent_input.run_id,
@@ -108,7 +108,7 @@ class QuantitativeExtractionCapability:
                         failure_reason_codes=(),
                         requested_transition=RequestedTransition(action=TransitionAction.ADVANCE, target_stage=None, reason_code="QUANTITATIVE_EXTRACTION_REUSED", requires_human_confirmation=False),
                         output_artifacts={name: ArtifactReference(path=str(path), hash=sha256_file(path)) for name, path in existing.items()},
-                        tool_usage=ToolUsage(), attempt_number=1, started_at=started,
+                        tool_usage=ToolUsage(), attempt_number=agent_input.attempt_number, started_at=started,
                         completed_at=datetime.now(timezone.utc).isoformat(), error=None,
                     )
             # Decide si se repararán únicamente las tablas 
@@ -188,14 +188,23 @@ class QuantitativeExtractionCapability:
             # Identifica si se realizó una extracción completa o únicamente una reparación determinista del aplanamiento.
             decision_code = "QUANTITATIVE_FLATTENING_REPAIRED" if preserve_sources else "QUANTITATIVE_EXTRACTION_COMPLETED"
             # Devuelve el resultado final de 03B con métricas, artefactos, advertencias y número de llamadas al LLM.
+            # Decide avanzar, reintentar (mientras queden intentos según
+            # policy["max_attempts"] -- antes 03B nunca pedía RETRY, iba
+            # directo a HALT_STAGE sin importar el intento) o detener la etapa.
+            if quality in {QualityStatus.APPROVED, QualityStatus.APPROVED_WITH_WARNINGS}:
+                next_action = TransitionAction.ADVANCE
+            elif agent_input.attempt_number < policy["max_attempts"]:
+                next_action = TransitionAction.RETRY
+            else:
+                next_action = TransitionAction.HALT_STAGE
             return AgentResult(
                 execution_status=ExecutionStatus.COMPLETED, quality_status=quality,
                 decision=DecisionInfo(code=decision_code, rationale="La capacidad 03B produjo sus nueve artefactos con validación JSON↔tablas."),
                 quality_metrics={"technical": {"llm_calls": calls}, "scientific": metrics},
                 warnings=warnings, failure_reason_codes=tuple(reasons),
-                requested_transition=RequestedTransition(action=TransitionAction.ADVANCE if quality in {QualityStatus.APPROVED, QualityStatus.APPROVED_WITH_WARNINGS} else TransitionAction.HALT_STAGE, target_stage=None, reason_code=decision_code, requires_human_confirmation=False),
+                requested_transition=RequestedTransition(action=next_action, target_stage=None, reason_code=decision_code, requires_human_confirmation=False),
                 output_artifacts={name: ArtifactReference(path=result.path, hash=result.hash) for name, result in written.items()},
-                tool_usage=ToolUsage(llm_calls=calls), attempt_number=1, started_at=started,
+                tool_usage=ToolUsage(llm_calls=calls), attempt_number=agent_input.attempt_number, started_at=started,
                 completed_at=datetime.now(timezone.utc).isoformat(), error=None,
             )
         # Si ocurre un error, identifica su causa conocida, sanitiza información sensible y detiene 03B de forma segura.
@@ -216,7 +225,7 @@ class QuantitativeExtractionCapability:
                 warnings=(AgentWarning(code=code, severity=WarningSeverity.ERROR, blocking=True, message=safe),),
                 failure_reason_codes=(code,),
                 requested_transition=RequestedTransition(action=TransitionAction.HALT_STAGE, target_stage=None, reason_code=code, requires_human_confirmation=False),
-                output_artifacts={}, tool_usage=ToolUsage(), attempt_number=1,
+                output_artifacts={}, tool_usage=ToolUsage(), attempt_number=agent_input.attempt_number,
                 started_at=started, completed_at=datetime.now(timezone.utc).isoformat(),
                 error={"type": type(exc).__name__, "message": safe, "stage": STAGE_NAME},
             )

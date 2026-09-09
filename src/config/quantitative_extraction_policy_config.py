@@ -36,7 +36,7 @@ DEFAULT_QUANTITATIVE_EXTRACTION_POLICY = {
     "only_include_state_of_art_papers": True,
     "verify_values_against_source_chunks": True,
     "allow_all_clean_chunks_fallback": True,
-    "max_attempts": 1,
+    "max_attempts": 2,
     "deterministic_flattening_repair": False,
     "diagnostic_thresholds": deepcopy(PROVISIONAL_DIAGNOSTIC_THRESHOLDS),
 }
@@ -87,7 +87,7 @@ def validate_quantitative_policy(value: Mapping[str, Any]) -> dict[str, Any]:
     merged["temperature"]=temperature
     for key in ("auto_rebuild","force_rebuild","only_include_state_of_art_papers","verify_values_against_source_chunks","allow_all_clean_chunks_fallback","deterministic_flattening_repair"):
         if not isinstance(merged[key], bool): raise TypeError(f"{key} debe ser bool.")
-    if merged["max_attempts"] != 1: raise ValueError("La primera candidata 03B admite únicamente max_attempts=1.")
+    if not isinstance(merged["max_attempts"], int) or not 1 <= merged["max_attempts"] <= 2: raise ValueError("03B admite max_attempts entre 1 y 2.")
     thresholds=merged.get("diagnostic_thresholds",{})
     if not isinstance(thresholds, Mapping): raise TypeError("diagnostic_thresholds debe ser mapping.")
     merged["diagnostic_thresholds"]=deepcopy(dict(thresholds))
