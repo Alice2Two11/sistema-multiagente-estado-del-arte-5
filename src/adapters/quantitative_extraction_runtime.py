@@ -17,9 +17,9 @@ def load_quantitative_configuration(project_dir:str|Path):
     policy=validate_quantitative_policy(active.get('quantitative_extraction_policy',{}))
     return {'project_dir':root,'experiment_id':exp,'run_id':active.get('run_id',exp),'experiment_dir':exp_dir,'output_dir':kb,'model':active['openai_model'],'policy':policy,'paths':{'scientific_knowledge_base_csv':kb/'scientific_knowledge_base.csv','scientific_knowledge_base_jsonl':kb/'scientific_knowledge_base.jsonl','scientific_extraction_manifest':outputs/'01_scientific_extraction'/'scientific_extraction_manifest.json','chunks_clean_for_rag_csv':chunks}}
 
-def build_quantitative_agent_input(configuration):
+def build_quantitative_agent_input(configuration, attempt_number:int=1):
     deps={name:ArtifactReference(path=str(path),hash=sha256_file(path)) for name,path in configuration['paths'].items() if path.exists()}
-    return AgentInput(experiment_id=configuration['experiment_id'],run_id=configuration['run_id'],stage_name=STAGE_NAME,attempt_number=1,mode=ExecutionMode.FULL_RUN,agent_context=AgentContext(allowed_tools=('llm','source_chunks','atomic_write'),output_directory=str(configuration['output_dir']),runtime_resources={'model':configuration['model']}),dependencies=deps,policy=configuration['policy'])
+    return AgentInput(experiment_id=configuration['experiment_id'],run_id=configuration['run_id'],stage_name=STAGE_NAME,attempt_number=attempt_number,mode=ExecutionMode.FULL_RUN,agent_context=AgentContext(allowed_tools=('llm','source_chunks','atomic_write'),output_directory=str(configuration['output_dir']),runtime_resources={'model':configuration['model']}),dependencies=deps,policy=configuration['policy'])
 
 def build_quantitative_capability(configuration, *, llm_factory:Any=None, human_message_factory:Any=None, json_parser:Any=None):
     repair_mode = bool(configuration['policy'].get('deterministic_flattening_repair', False))

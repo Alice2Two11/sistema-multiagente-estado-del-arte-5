@@ -70,10 +70,9 @@ def _real_quantitative_execution(project_dir, attempt_number: int):
         load_quantitative_configuration,
     )
 
-    # El Agente 03B sólo admite attempt_number=1 en el wiring actual de src/.
     configuration = load_quantitative_configuration(project_dir)
     capability = build_quantitative_capability(configuration)
-    agent_input = build_quantitative_agent_input(configuration)
+    agent_input = build_quantitative_agent_input(configuration, attempt_number)
     return capability, agent_input
 
 
@@ -324,14 +323,12 @@ def _quantitative_runtime_transaction(
     attempt_number: int,
     observations: Mapping[str, Any] | None = None,
 ):
-    # execute_quantitative_runtime_transaction no admite attempt_number: la
-    # etapa 03B siempre corre como attempt_number=1 en el wiring actual.
     from src.runtime.quantitative_extraction_protocol import (
         execute_quantitative_runtime_transaction,
     )
 
     return execute_quantitative_runtime_transaction(
-        store=store, build_execution=build_execution, observations=observations
+        store=store, build_execution=build_execution, attempt_number=attempt_number, observations=observations
     )
 
 

@@ -25,8 +25,8 @@ def execute_quantitative_transaction(*, store:StateStore, capability:Any, agent_
     state=store.commit_execution(decision_id=prepared.decision_id,result=result,stage_name=agent_input.stage_name,fingerprints=build_quantitative_fingerprints(agent_input),observations=dict(observations or {}))
     return QuantitativeTransactionResult(prepared,result,str(persisted),state)
 
-def execute_quantitative_runtime_transaction(*, store:StateStore, build_execution:Any, observations=None):
-    prepared=store.prepare_execution(target_stage='03B_extraccion_cuantitativa_kb',intended_action='EXECUTE_QUANTITATIVE_EXTRACTION',attempt_number=1)
+def execute_quantitative_runtime_transaction(*, store:StateStore, build_execution:Any, attempt_number:int=1, observations=None):
+    prepared=store.prepare_execution(target_stage='03B_extraccion_cuantitativa_kb',intended_action='EXECUTE_QUANTITATIVE_EXTRACTION',attempt_number=attempt_number)
     try:
         capability,agent_input=build_execution(); result=capability.execute(agent_input); fingerprints=build_quantitative_fingerprints(agent_input)
     except Exception as exc:
@@ -37,8 +37,8 @@ def execute_quantitative_runtime_transaction(*, store:StateStore, build_executio
         # use shared capability failure conversion through a minimal invalid input is not safe; construct directly
         from src.contracts.agent_result import AgentWarning,DecisionInfo,ExecutionStatus,QualityStatus,RequestedTransition,ToolUsage,TransitionAction,WarningSeverity
         safe=str(exc); code=('DEPENDENCY_NOT_FOUND' if isinstance(exc,FileNotFoundError) else ('CREDENTIAL_NOT_FOUND' if 'credencial' in safe.casefold() or 'OPENAI_API_KEY' in safe else 'RUNTIME_DEPENDENCY_FAILED'))
-        result=AgentResult(execution_status=ExecutionStatus.FAILED,quality_status=QualityStatus.REJECTED,decision=DecisionInfo(code='QUANTITATIVE_RUNTIME_FAILED',rationale='Falló la preparación de 03B.'),quality_metrics={'technical':{},'scientific':{}},warnings=(AgentWarning(code=code,severity=WarningSeverity.ERROR,blocking=True,message=safe),),failure_reason_codes=(code,),requested_transition=RequestedTransition(action=TransitionAction.HALT_STAGE,target_stage=None,reason_code=code,requires_human_confirmation=False),output_artifacts={},tool_usage=ToolUsage(),attempt_number=1,started_at=datetime.now(timezone.utc).isoformat(),completed_at=datetime.now(timezone.utc).isoformat(),error={'type':type(exc).__name__,'message':safe,'stage':'03B_extraccion_cuantitativa_kb'})
-        fingerprints=build_stage_fingerprints(input_data={'stage_name':'03B_extraccion_cuantitativa_kb','attempt_number':1},config_data={'runtime_resolution':'FAILED'},dependencies_data={})
+        result=AgentResult(execution_status=ExecutionStatus.FAILED,quality_status=QualityStatus.REJECTED,decision=DecisionInfo(code='QUANTITATIVE_RUNTIME_FAILED',rationale='Falló la preparación de 03B.'),quality_metrics={'technical':{},'scientific':{}},warnings=(AgentWarning(code=code,severity=WarningSeverity.ERROR,blocking=True,message=safe),),failure_reason_codes=(code,),requested_transition=RequestedTransition(action=TransitionAction.HALT_STAGE,target_stage=None,reason_code=code,requires_human_confirmation=False),output_artifacts={},tool_usage=ToolUsage(),attempt_number=attempt_number,started_at=datetime.now(timezone.utc).isoformat(),completed_at=datetime.now(timezone.utc).isoformat(),error={'type':type(exc).__name__,'message':safe,'stage':'03B_extraccion_cuantitativa_kb'})
+        fingerprints=build_stage_fingerprints(input_data={'stage_name':'03B_extraccion_cuantitativa_kb','attempt_number':attempt_number},config_data={'runtime_resolution':'FAILED'},dependencies_data={})
     persisted=store.persist_agent_result(prepared.decision_id,result); state=store.commit_execution(decision_id=prepared.decision_id,result=result,stage_name='03B_extraccion_cuantitativa_kb',fingerprints=fingerprints,observations=dict(observations or {}))
     return QuantitativeTransactionResult(prepared,result,str(persisted),state)
 

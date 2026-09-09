@@ -200,7 +200,7 @@ def _stage_registry() -> list[StageSpec]:
             runtime_transaction=_quantitative_runtime_transaction,
             resolve_resume=resolve_quantitative_resume,
             build_fingerprints=build_quantitative_fingerprints,
-            max_attempt_number=1,
+            max_attempt_number=2,
         ),
         StageSpec(
             key="04_agente_analisis_tematico",
