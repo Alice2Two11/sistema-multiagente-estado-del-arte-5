@@ -7,7 +7,8 @@ REQUIRED=('thematic_analysis_json','thematic_analysis_manifest','thematic_valida
 def _json(path): return json.loads(Path(path).read_text(encoding='utf-8'))
 def validate_outline_dependencies(agent_input):
  if agent_input.stage_name!='05_generador_esquema': raise ValueError('INVALID_CONFIGURATION')
- if agent_input.attempt_number not in (1,2): raise ValueError('INVALID_CONFIGURATION')
+ max_attempts=int(agent_input.policy.get('max_attempts',2))
+ if agent_input.attempt_number not in range(1,max_attempts+1): raise ValueError('INVALID_CONFIGURATION')
  deps=agent_input.dependencies
  for name in REQUIRED:
   if name not in deps: raise FileNotFoundError(f'OUTLINE_INPUT_NOT_FOUND:{name}')

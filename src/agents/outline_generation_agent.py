@@ -93,6 +93,33 @@ class OutlineGenerationAgent:
                 repair_empty_section_papers(outline, themes, valid)
             )
 
+            # Verifica cada key_argument contra evidencia real recuperada de
+            # los papers ya asignados a cada sección -- 05 sintetiza a
+            # partir de fichas resumidas (03/04), nunca contra texto fuente,
+            # así que puede producir un argumento sintéticamente plausible
+            # que ningún paper específico respalda. Se descarta (nunca en
+            # silencio, ver key_arguments_verification abajo) antes de que
+            # 06 llegue a intentar escribir sobre algo sin base real.
+            # Requiere self.runtime.collection -- si no está disponible
+            # (ej. rutas de prueba que no lo configuran), se omite sin
+            # afectar el resto del flujo.
+            key_arguments_verification = {"sections_checked": 0, "key_arguments_removed": 0, "details": []}
+            if getattr(self.runtime, "collection", None) is not None:
+                import pandas as pd
+                from src.tools.outline_generation.key_argument_verification import (
+                    verify_and_prune_unsupported_key_arguments,
+                )
+
+                chunks_path = out.parent.parent / "03_chunks" / "chunks_clean_for_rag.csv"
+                if chunks_path.is_file():
+                    chunks_df = pd.read_csv(chunks_path)
+                    key_arguments_verification = verify_and_prune_unsupported_key_arguments(
+                        outline,
+                        collection=self.runtime.collection,
+                        chunks_df=chunks_df,
+                        min_relevance_score=float(agent_input.policy.get("min_relevance_score", 0.0)),
+                    )
+
             # Valida el esquema generado usando los papers permitidos,
             # los límites de secciones y los resultados de las reparaciones previas.
             validation = validate_outline(
@@ -109,7 +136,8 @@ class OutlineGenerationAgent:
                 "experiment_id": agent_input.experiment_id,
                 "validation_version": agent_input.policy.get("validation_version"),
                 "section_papers_repairs": section_papers_repairs,
-                "sections_without_upstream_evidence": sections_without_upstream_evidence
+                "sections_without_upstream_evidence": sections_without_upstream_evidence,
+                "key_arguments_verification": key_arguments_verification
             })
 
             codes = reason_codes(validation)
@@ -124,10 +152,12 @@ class OutlineGenerationAgent:
             )
 
             # Decide qué debe hacer el agente después de validar el esquema:
-            # avanzar, reintentar una vez o detener la etapa.
+            # avanzar, reintentar (mientras queden intentos según la
+            # política, antes hardcodeado a "solo el intento 1") o detener
+            # la etapa.
             if quality is QualityStatus.APPROVED:
                 action = TransitionAction.ADVANCE
-            elif agent_input.attempt_number == 1:
+            elif agent_input.attempt_number < int(agent_input.policy.get("max_attempts", 2)):
                 action = TransitionAction.RETRY
             else:
                 action = TransitionAction.HALT_STAGE

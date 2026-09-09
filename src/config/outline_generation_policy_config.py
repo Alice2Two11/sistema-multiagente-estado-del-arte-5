@@ -6,7 +6,7 @@ OUTLINE_SCHEMA_VERSION='v2_sections_paper_mapping_traceability'
 OUTLINE_VALIDATION_VERSION='v2_repair_then_validate'
 DEFAULT_POLICY={
  'force_rebuild':False,
- 'max_attempts':2,
+ 'max_attempts':3,
  'max_field_chars':1800,
  'title_match_cutoff':0.55,
  'stage_version':OUTLINE_STAGE_VERSION,
